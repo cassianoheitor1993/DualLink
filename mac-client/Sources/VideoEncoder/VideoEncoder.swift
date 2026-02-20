@@ -182,9 +182,13 @@ extension VideoEncoder {
             return first[kCMSampleAttachmentKey_NotSync] as? Bool != true
         }()
 
-        guard let dataBuffer = sampleBuffer.dataBuffer else { return }
+        guard let nalData = buildAnnexBNALData(from: sampleBuffer, isKeyframe: isKeyframe) else { return }
+        onEncodedData?(nalData, sampleBuffer.presentationTimeStamp, isKeyframe)
+    }
 
-        // Extrair bytes do CMBlockBuffer
+    private func buildAnnexBNALData(from sampleBuffer: CMSampleBuffer, isKeyframe: Bool) -> [UInt8]? {
+        guard let dataBuffer = sampleBuffer.dataBuffer else { return nil }
+
         var dataLength = 0
         var dataPointer: UnsafeMutablePointer<Int8>?
         let status = CMBlockBufferGetDataPointer(
@@ -194,14 +198,69 @@ extension VideoEncoder {
             totalLengthOut: &dataLength,
             dataPointerOut: &dataPointer
         )
+        guard status == noErr, let dataPointer, dataLength > 0 else { return nil }
 
-        guard status == noErr, let dataPointer, dataLength > 0 else { return }
+        let bytes = UnsafeRawPointer(dataPointer).assumingMemoryBound(to: UInt8.self)
+        let startCode: [UInt8] = [0x00, 0x00, 0x00, 0x01]
+        var annexB: [UInt8] = []
+        annexB.reserveCapacity(dataLength + 64)
 
-        // Converter para array de bytes
-        // PERF: Em produção, usar Bytes para evitar cópia (TODO: migrar para optimization sprint)
-        let nalData = Array(UnsafeBufferPointer(start: UnsafeRawPointer(dataPointer).assumingMemoryBound(to: UInt8.self), count: dataLength))
+        if isKeyframe, let formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer) {
+            appendH264ParameterSets(from: formatDesc, into: &annexB, startCode: startCode)
+        }
 
-        onEncodedData?(nalData, sampleBuffer.presentationTimeStamp, isKeyframe)
+        var offset = 0
+        while offset + 4 <= dataLength {
+            let nalLen = Int(
+                (UInt32(bytes[offset]) << 24)
+                | (UInt32(bytes[offset + 1]) << 16)
+                | (UInt32(bytes[offset + 2]) << 8)
+                | UInt32(bytes[offset + 3])
+            )
+            offset += 4
+
+            guard nalLen > 0, offset + nalLen <= dataLength else {
+                return nil
+            }
+
+            annexB.append(contentsOf: startCode)
+            let nalStart = bytes.advanced(by: offset)
+            annexB.append(contentsOf: UnsafeBufferPointer(start: nalStart, count: nalLen))
+            offset += nalLen
+        }
+
+        return annexB.isEmpty ? nil : annexB
+    }
+
+    private func appendH264ParameterSets(from formatDesc: CMFormatDescription, into out: inout [UInt8], startCode: [UInt8]) {
+        var parameterSetCount: Int = 0
+        var nalHeaderLength: Int32 = 0
+
+        let firstStatus = CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
+            formatDesc,
+            parameterSetIndex: 0,
+            parameterSetPointerOut: nil,
+            parameterSetSizeOut: nil,
+            parameterSetCountOut: &parameterSetCount,
+            nalUnitHeaderLengthOut: &nalHeaderLength
+        )
+        guard firstStatus == noErr, parameterSetCount > 0 else { return }
+
+        for idx in 0..<parameterSetCount {
+            var ptr: UnsafePointer<UInt8>?
+            var size: Int = 0
+            let status = CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
+                formatDesc,
+                parameterSetIndex: idx,
+                parameterSetPointerOut: &ptr,
+                parameterSetSizeOut: &size,
+                parameterSetCountOut: nil,
+                nalUnitHeaderLengthOut: nil
+            )
+            guard status == noErr, let ptr, size > 0 else { continue }
+            out.append(contentsOf: startCode)
+            out.append(contentsOf: UnsafeBufferPointer(start: ptr, count: size))
+        }
     }
 }
 

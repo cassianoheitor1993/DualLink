@@ -88,6 +88,7 @@ impl GStreamerDecoder {
 
         // Let h264parse auto-detect whether input is AVCC or AnnexB
         let src_caps = gst::Caps::builder("video/x-h264")
+            .field("stream-format", "avc")
             .field("alignment", "au")
             .build();
         appsrc.set_caps(Some(&src_caps));

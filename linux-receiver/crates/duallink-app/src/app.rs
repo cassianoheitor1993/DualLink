@@ -50,27 +50,21 @@ pub async fn run() -> Result<()> {
 
     info!("Decoder ready: {} hw={}", decoder.element_name(), decoder.is_hardware_accelerated());
 
-    // Wrap in Arc for sharing between blocking task and event handler
-    let decoder = std::sync::Arc::new(decoder);
-
     // ── Main receive → decode loop ─────────────────────────────────────────
     info!("Streaming — receiving frames...");
     loop {
         tokio::select! {
             // Incoming encoded frame
             Some(frame) = frame_rx.recv() => {
-                let dec = std::sync::Arc::clone(&decoder);
-                tokio::task::spawn_blocking(move || {
-                    match dec.decode_frame(frame) {
-                        Ok(decoded) => {
-                            // TODO: Sprint 2 — pass decoded frame to renderer
-                            let _ = decoded;
-                        }
-                        Err(e) => {
-                            warn!("Decode error: {}", e);
-                        }
+                match decoder.decode_frame(frame) {
+                    Ok(decoded) => {
+                        // TODO: Sprint 2 — pass decoded frame to renderer
+                        let _ = decoded;
                     }
-                });
+                    Err(e) => {
+                        warn!("Decode error: {}", e);
+                    }
+                }
             }
 
             // Signaling events mid-session

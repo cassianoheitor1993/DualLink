@@ -53,6 +53,9 @@ public final class ScreenCaptureManager: NSObject, ObservableObject {
     private var frameHandler: FrameHandler?
     private var frameCount: Int = 0
     private var lastFPSUpdate: Date = .now
+    private var lastPixelBuffer: CVPixelBuffer?
+    private var lastPTS: CMTime = .zero
+    private var repeatTimer: Timer?
 
     // MARK: - Init
 
@@ -112,10 +115,26 @@ public final class ScreenCaptureManager: NSObject, ObservableObject {
 
         self.stream = stream
         state = .capturing(displayID: displayID)
+
+        // Repeat last frame at target FPS when screen is static
+        // (macOS 14 SCK stops delivering pixel data on unchanged content).
+        let interval = 1.0 / Double(config.targetFPS)
+        repeatTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+            guard let self, let pb = self.lastPixelBuffer else { return }
+            let pts = CMTimeAdd(self.lastPTS, CMTime(seconds: interval, preferredTimescale: 600))
+            self.lastPTS = pts
+            let frame = CapturedFrame(pixelBuffer: pb, presentationTime: pts,
+                                      width: CVPixelBufferGetWidth(pb), height: CVPixelBufferGetHeight(pb))
+            self.updateFPS()
+            self.frameHandler?(frame)
+        }
     }
 
     /// Para a captura.
     public func stopCapture() async throws {
+        repeatTimer?.invalidate()
+        repeatTimer = nil
+        lastPixelBuffer = nil
         guard case .capturing = state else { return }
         try await stream?.stopCapture()
         stream = nil
@@ -152,31 +171,24 @@ extension ScreenCaptureManager: SCStreamOutput {
         didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
         of outputType: SCStreamOutputType
     ) {
-        guard outputType == .screen else { return }
+        guard outputType == .screen,
+              let pixelBuffer = sampleBuffer.imageBuffer else { return }
 
-        // macOS 14 SCK dirty-rect optimisation: skip timing-only buffers
-        // that have no pixel data (status != .complete).
-        if let statusNum = CMGetAttachment(
-            sampleBuffer,
-            key: SCStreamFrameInfo.status as CFString,
-            attachmentModeOut: nil
-        ) as? NSNumber,
-           SCFrameStatus(rawValue: statusNum.intValue) != .complete {
-            return
-        }
-
-        guard let pixelBuffer = sampleBuffer.imageBuffer else { return }
-
+        let pts = sampleBuffer.presentationTimeStamp
         let frame = CapturedFrame(
             pixelBuffer: pixelBuffer,
-            presentationTime: sampleBuffer.presentationTimeStamp,
+            presentationTime: pts,
             width: CVPixelBufferGetWidth(pixelBuffer),
             height: CVPixelBufferGetHeight(pixelBuffer)
         )
 
         Task { @MainActor [weak self] in
-            self?.updateFPS()
-            self?.frameHandler?(frame)
+            guard let self else { return }
+            // Update last frame so the repeat timer has fresh content
+            self.lastPixelBuffer = pixelBuffer
+            self.lastPTS = pts
+            self.updateFPS()
+            self.frameHandler?(frame)
         }
     }
 

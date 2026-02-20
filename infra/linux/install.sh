@@ -7,6 +7,8 @@ BINARY_NAME="duallink-receiver"
 INSTALL_DIR="/usr/local/bin"
 SERVICE_NAME="duallink-receiver.service"
 SERVICE_SRC="$(dirname "$0")/$SERVICE_NAME"
+DESKTOP_SRC="$(dirname "$0")/duallink-receiver.desktop"
+ICON_SRC="$(dirname "$0")/duallink-receiver.svg"
 
 # When invoked via sudo, operate on the real user's home/systemd session
 REAL_USER="${SUDO_USER:-$USER}"
@@ -32,6 +34,10 @@ if [[ "${1:-}" == "--uninstall" ]]; then
     run_as_user systemctl --user daemon-reload
     info "Removing binary..."
     rm -f "$INSTALL_DIR/$BINARY_NAME"
+    info "Removing desktop entry and icon..."
+    rm -f "$REAL_HOME/.local/share/applications/duallink-receiver.desktop"
+    rm -f "$REAL_HOME/.local/share/icons/hicolor/scalable/apps/duallink-receiver.svg"
+    run_as_user update-desktop-database "$REAL_HOME/.local/share/applications" 2>/dev/null || true
     info "Uninstall complete."
     exit 0
 fi
@@ -64,6 +70,17 @@ run_as_user systemctl --user start  "$SERVICE_NAME"
 
 # ── Enable lingering so it survives logout ─────────────────────────────────
 loginctl enable-linger "$REAL_USER" 2>/dev/null || warn "loginctl not available — service won't auto-start on boot."
+
+# ── Install desktop entry + icon ───────────────────────────────────────────
+info "Installing app icon and desktop entry..."
+ICON_DIR="$REAL_HOME/.local/share/icons/hicolor/scalable/apps"
+APPS_DIR="$REAL_HOME/.local/share/applications"
+mkdir -p "$ICON_DIR" "$APPS_DIR"
+cp "$ICON_SRC" "$ICON_DIR/duallink-receiver.svg"
+cp "$DESKTOP_SRC" "$APPS_DIR/duallink-receiver.desktop"
+chown -R "$REAL_USER:" "$REAL_HOME/.local/share/icons/hicolor" "$APPS_DIR/duallink-receiver.desktop"
+run_as_user update-desktop-database "$APPS_DIR" 2>/dev/null || true
+run_as_user gtk-update-icon-cache -f -t "$REAL_HOME/.local/share/icons/hicolor" 2>/dev/null || true
 
 # ── Done ───────────────────────────────────────────────────────────────────
 info "Installation complete!"

@@ -10,25 +10,32 @@ use crate::state::{Phase, SharedState};
 
 const SERVICE_NAME: &str = "duallink-receiver.service";
 
-// ── Stop conflicting systemd service ──────────────────────────────────────────
+// ── Port release helpers ───────────────────────────────────────────────────────
 
-/// Returns `true` if the systemd user service is currently active.
-fn service_is_active() -> bool {
-    std::process::Command::new("systemctl")
-        .args(["--user", "is-active", "--quiet", SERVICE_NAME])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+/// Stop the systemd user service.  Works even when launched from a GUI session
+/// (GNOME sets XDG_RUNTIME_DIR and the D-Bus socket in the environment).
+fn stop_systemd_service() {
+    let _ = std::process::Command::new("systemctl")
+        .args(["--user", "stop", SERVICE_NAME])
+        .status();
 }
 
-/// Best-effort: stop the systemd user service so the GUI can bind the ports.
-/// Returns `true` if the stop command exited successfully.
-fn stop_service() -> bool {
-    std::process::Command::new("systemctl")
-        .args(["--user", "stop", SERVICE_NAME])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+/// Kill whatever process is currently holding UDP:7878 or TCP:7879.
+/// Uses `fuser` (util-linux) which doesn't need D-Bus.
+fn fuser_kill_ports() {
+    // UDP 7878
+    let _ = std::process::Command::new("fuser")
+        .args(["-k", "7878/udp"])
+        .status();
+    // TCP 7879
+    let _ = std::process::Command::new("fuser")
+        .args(["-k", "7879/tcp"])
+        .status();
+}
+
+/// True if anything is currently listening on TCP:7879 (fast path check).
+fn port_is_busy() -> bool {
+    std::net::TcpListener::bind("0.0.0.0:7879").is_err()
 }
 
 // ── Entry point (called from the tokio runtime thread) ─────────────────────────
@@ -57,36 +64,38 @@ pub async fn run(state: SharedState, ctx: egui::Context) {
     }
     ctx.request_repaint();
 
-    // ── Step 0b: release ports held by the systemd background service ─────
+    // ── Step 0b: unconditionally release ports before binding ─────────────
     //
-    // The GUI and the background service both bind UDP:7878 + TCP:7879.
-    // If the service is running we stop it first so the GUI can take over.
-    if service_is_active() {
+    // Always stop the service and fuser-kill the ports, then wait for sockets
+    // to be released.  This works regardless of whether we're launched from a
+    // terminal or from the GNOME app launcher (where is-active can silently
+    // fail due to D-Bus environment differences).
+    if tokio::task::spawn_blocking(port_is_busy).await.unwrap_or(false) {
         {
             let mut s = state.lock().unwrap();
-            s.push_log(format!(
-                "Stopping {} so the GUI can bind the ports…",
-                SERVICE_NAME
-            ));
+            s.push_log(format!("Port 7879 busy — stopping {} and killing port holders…", SERVICE_NAME));
         }
         ctx.request_repaint();
 
-        let stopped = tokio::task::spawn_blocking(stop_service).await.unwrap_or(false);
-        {
-            let mut s = state.lock().unwrap();
-            if stopped {
-                s.push_log(format!("{} stopped — binding ports…", SERVICE_NAME));
-            } else {
-                s.push_log(format!(
-                    "[WARN] Could not stop {} — port conflict may follow",
-                    SERVICE_NAME
-                ));
+        tokio::task::spawn_blocking(|| {
+            stop_systemd_service();
+            fuser_kill_ports();
+        }).await.ok();
+
+        // Wait up to 1.5 s in 150 ms steps for the port to free
+        for _ in 0..10 {
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            let still_busy = tokio::task::spawn_blocking(port_is_busy).await.unwrap_or(true);
+            if !still_busy {
+                break;
             }
         }
-        ctx.request_repaint();
 
-        // Give the service a moment to release its sockets
-        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        {
+            let mut s = state.lock().unwrap();
+            s.push_log("Ports released — binding…".to_string());
+        }
+        ctx.request_repaint();
     }
 
     // ── Step 1: bind ports and generate PIN / TLS key ─────────────────────
@@ -97,9 +106,10 @@ pub async fn run(state: SharedState, ctx: egui::Context) {
                 let msg = e.to_string();
                 let hint = if msg.contains("Address already in use") {
                     format!(
-                        "[ERROR] Port already in use — run:  systemctl --user stop {}  \
-                         then reopen the GUI.",
-                        SERVICE_NAME
+                        "[ERROR] Port still in use after auto-stop. Run manually:\n\
+                         systemctl --user stop {SERVICE_NAME}\n\
+                         sudo fuser -k 7878/udp 7879/tcp\n\
+                         Then reopen the GUI."
                     )
                 } else {
                     format!("[ERROR] Failed to start receiver: {}", msg)

@@ -86,26 +86,59 @@ public final class VirtualDisplayManager: ObservableObject {
             )
             _virtualDisplay = display
 
-            // Poll CGGetActiveDisplayList without blocking the main run loop.
-            // Thread.sleep here would prevent WindowServer from firing the
-            // display-ready notification (GT-1005 lesson).
+            // Poll for the virtual display to appear on the system.
+            // Must use Task.sleep (not Thread.sleep) so the MainActor RunLoop
+            // can process WindowServer notifications (GT-1005).
+            //
+            // Check both CGGetActiveDisplayList AND CGDisplayIsOnline — in some
+            // macOS versions the display is "online" before it's "active".
             var appeared = false
-            for _ in 1...30 {   // up to 3 seconds (30 × 100ms)
+            for attempt in 1...50 {   // up to 5 seconds (50 × 100ms)
                 try await Task.sleep(nanoseconds: 100_000_000)
-                var ids = [CGDirectDisplayID](repeating: 0, count: 16)
-                var count: UInt32 = 0
-                CGGetActiveDisplayList(16, &ids, &count)
-                if ids.prefix(Int(count)).contains(id) {
+
+                // Direct check — fastest path
+                if CGDisplayIsOnline(id) != 0 {
+                    print("[VirtualDisplay] displayID \(id) is online (attempt \(attempt))")
                     appeared = true
                     break
+                }
+
+                // Fallback: check the active list
+                var ids = [CGDirectDisplayID](repeating: 0, count: 32)
+                var count: UInt32 = 0
+                CGGetActiveDisplayList(32, &ids, &count)
+                if ids.prefix(Int(count)).contains(id) {
+                    print("[VirtualDisplay] displayID \(id) in active list (attempt \(attempt))")
+                    appeared = true
+                    break
+                }
+
+                if attempt % 10 == 0 {
+                    // Log what displays we DO see every second
+                    let visible = ids.prefix(Int(count)).map { String($0) }.joined(separator: ", ")
+                    print("[VirtualDisplay] Waiting for \(id)... active displays: [\(visible)] (attempt \(attempt)/50)")
                 }
             }
 
             guard appeared else {
+                // Last-ditch diagnostic: log all online and active displays
+                var activeIDs = [CGDirectDisplayID](repeating: 0, count: 32)
+                var activeCount: UInt32 = 0
+                CGGetActiveDisplayList(32, &activeIDs, &activeCount)
+                var onlineIDs = [CGDirectDisplayID](repeating: 0, count: 32)
+                var onlineCount: UInt32 = 0
+                CGGetOnlineDisplayList(32, &onlineIDs, &onlineCount)
+                let activeStr = activeIDs.prefix(Int(activeCount)).map { String($0) }.joined(separator: ", ")
+                let onlineStr = onlineIDs.prefix(Int(onlineCount)).map { String($0) }.joined(separator: ", ")
+                print("[VirtualDisplay] FAILED — displayID \(id) not found after 5s")
+                print("[VirtualDisplay]   Active displays: [\(activeStr)]")
+                print("[VirtualDisplay]   Online displays: [\(onlineStr)]")
+                print("[VirtualDisplay]   CGDisplayIsOnline(\(id)) = \(CGDisplayIsOnline(id))")
+
                 _virtualDisplay = nil
                 throw VirtualDisplayError.creationFailed(
-                    "displayID \(id) not in CGGetActiveDisplayList after 3s — " +
-                    "ensure NSApplication is running and display mode has valid dimensions"
+                    "displayID \(id) not detected after 5s — " +
+                    "active: [\(activeStr)], online: [\(onlineStr)]"
                 )
             }
 

@@ -56,9 +56,9 @@ public struct StreamConfig: Equatable, Codable, Sendable {
     public static let `default` = StreamConfig()
 
     public static let highPerformance = StreamConfig(
-        resolution: .qhd,
+        resolution: .fhd,
         targetFPS: 60,
-        maxBitrateBps: 20_000_000,
+        maxBitrateBps: 15_000_000,
         codec: .h264,
         lowLatencyMode: true
     )

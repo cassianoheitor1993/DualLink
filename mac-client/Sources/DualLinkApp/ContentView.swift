@@ -7,6 +7,7 @@ import ScreenCapture
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
     @State private var receiverHost: String = "10.0.0.59"
+    @State private var use60fps: Bool = true
 
     var body: some View {
         VStack(spacing: 0) {
@@ -15,10 +16,10 @@ struct ContentView: View {
             StatusView()
             Divider()
             if !appState.connectionState.isActive {
-                ConnectView(receiverHost: $receiverHost)
+                ConnectView(receiverHost: $receiverHost, use60fps: $use60fps)
                 Divider()
             }
-            ControlsView(receiverHost: receiverHost)
+            ControlsView(receiverHost: receiverHost, use60fps: use60fps)
         }
         .frame(width: 380)
         .background(.ultraThinMaterial)
@@ -36,6 +37,7 @@ struct ContentView: View {
 
 private struct ConnectView: View {
     @Binding var receiverHost: String
+    @Binding var use60fps: Bool
     @FocusState private var isFocused: Bool
 
     var body: some View {
@@ -48,6 +50,18 @@ private struct ConnectView: View {
                 .font(.system(.body, design: .monospaced))
                 .focused($isFocused)
                 .onAppear { isFocused = true }
+
+            Toggle(isOn: $use60fps) {
+                HStack(spacing: 4) {
+                    Image(systemName: "speedometer")
+                        .foregroundStyle(.blue)
+                    Text(use60fps ? "60 fps" : "30 fps")
+                        .font(.caption)
+                        .monospacedDigit()
+                }
+            }
+            .toggleStyle(.switch)
+            .controlSize(.small)
         }
         .padding(.horizontal)
         .padding(.vertical, 10)
@@ -187,6 +201,7 @@ private struct StreamingStatusRow: View {
 private struct ControlsView: View {
     @EnvironmentObject var appState: AppState
     let receiverHost: String
+    let use60fps: Bool
 
     var body: some View {
         HStack(spacing: 8) {
@@ -202,7 +217,8 @@ private struct ControlsView: View {
             } else {
                 Button {
                     guard !receiverHost.isEmpty else { return }
-                    Task { await appState.connectAndStream(to: receiverHost) }
+                    let config = use60fps ? StreamConfig.highPerformance : StreamConfig.default
+                    Task { await appState.connectAndStream(to: receiverHost, config: config) }
                 } label: {
                     Label("Start Mirroring", systemImage: "play.fill")
                         .frame(maxWidth: .infinity)

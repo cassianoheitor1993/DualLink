@@ -159,7 +159,7 @@ public final class ScreenCaptureManager: NSObject, ObservableObject {
         streamConfig.scalesToFit = true
 
         // Capturar apenas o conteúdo visível
-        streamConfig.showsCursor = false
+        streamConfig.showsCursor = true
 
         return streamConfig
     }

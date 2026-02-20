@@ -67,12 +67,12 @@ if #available(macOS 14.0, *) {
     log("Current version does not support this API")
 }
 
-// MARK: - Step 3: verificar exibição no sistema após criação
+// MARK: - Step 3: verificar exibição no sistema após destruição
 
 var displayCountAfter: UInt32 = 0
 CGGetActiveDisplayList(0, nil, &displayCountAfter)
-log("Displays after: \(displayCountAfter)")
-check(displayCountAfter > displayCount, "Virtual display added to active display list")
+log("Displays after destruction: \(displayCountAfter) (expected: same as before → \(displayCount))")
+check(displayCountAfter == displayCount, "Display count restored after virtual display destroyed")
 
 // MARK: - Test Function
 
@@ -86,13 +86,23 @@ func testVirtualDisplayCreation() {
     let descriptor = descriptorClass.init()
 
     // Configurar propriedades via setValue:forKey: (KVC)
+    // API verificada via class_copyMethodList
     descriptor.setValue("DualLink Test Display", forKey: "name")
     descriptor.setValue(UInt32(1920), forKey: "maxPixelsWide")
     descriptor.setValue(UInt32(1080), forKey: "maxPixelsHigh")
+    descriptor.setValue(UInt32(0x1234), forKey: "productID")
+    descriptor.setValue(UInt32(0x5678), forKey: "vendorID")
+    descriptor.setValue(UInt32(42), forKey: "serialNum")
 
     // Tamanho físico em mm (597x336 ≈ 27" @ 96dpi)
     let sizeValue = NSValue(size: CGSize(width: 597, height: 336))
     descriptor.setValue(sizeValue, forKey: "sizeInMillimeters")
+
+    // Terminação handler — essencial para liberar o display corretamente
+    let terminationBlock: @convention(block) () -> Void = {
+        print("[--]    CGVirtualDisplay terminationHandler fired")
+    }
+    descriptor.setValue(terminationBlock as AnyObject, forKey: "terminationHandler")
 
     log("CGVirtualDisplayDescriptor configured: 1920x1080", ok: true)
 
@@ -100,29 +110,61 @@ func testVirtualDisplayCreation() {
     guard let displayClass = NSClassFromString("CGVirtualDisplay") as? NSObject.Type else {
         log("CGVirtualDisplay class not found in runtime", ok: false)
         log("⚠️  This API may not be publicly available yet")
-        log("   Try: Private framework or DriverKit extension")
         return
     }
 
-    // Tentar criar — espera um seletor init(descriptor:)
+    // Usar initWithDescriptor: (confirmed via class_copyMethodList)
     let displayInit = NSSelectorFromString("initWithDescriptor:")
     guard displayClass.instancesRespond(to: displayInit) else {
-        log("CGVirtualDisplay does not respond to init(descriptor:)", ok: false)
+        log("CGVirtualDisplay does not respond to initWithDescriptor:", ok: false)
         return
     }
 
-    let display = displayClass.init()
-    log("CGVirtualDisplay instantiated", ok: true)
+    // Perform initWithDescriptor: via ObjC runtime bridging
+    // Swift blocks alloc() — use perform on class to send alloc, then perform initWithDescriptor:
+    let allocSel = NSSelectorFromString("alloc")
+    guard let allocated = displayClass.perform(allocSel)?.takeUnretainedValue() as? NSObject else {
+        log("CGVirtualDisplay alloc failed", ok: false)
+        return
+    }
+    guard let display = allocated.perform(displayInit, with: descriptor)?.takeRetainedValue() as? NSObject else {
+        log("CGVirtualDisplay initWithDescriptor: returned nil", ok: false)
+        return
+    }
+    log("CGVirtualDisplay instantiated via initWithDescriptor:", ok: true)
 
     // Tentar obter displayID
     if let displayID = display.value(forKey: "displayID") as? CGDirectDisplayID {
         log("Display ID obtained: \(displayID)", ok: true)
         check(displayID != kCGNullDirectDisplay, "Display ID is valid (non-null)")
+        if displayID == kCGNullDirectDisplay {
+            log("   → Likely missing entitlement: com.apple.developer.CoreGraphics.virtual-display")
+            log("   → CLI scripts cannot receive WindowServer authorization without a signed .app bundle")
+        }
     } else {
         log("Could not obtain displayID from virtual display", ok: false)
     }
 
     // Configurar modos de display
+    guard let modeClass = NSClassFromString("CGVirtualDisplayMode") as? NSObject.Type else {
+        log("CGVirtualDisplayMode not found — skipping mode test")
+        return
+    }
+
+    let modeInit = NSSelectorFromString("initWithWidth:height:refreshRate:")
+    guard modeClass.instancesRespond(to: modeInit) else {
+        log("CGVirtualDisplayMode does not respond to expected initializer", ok: false)
+        return
+    }
+
+    // Create 1920x1080@30 mode
+    // initWithWidth:height:refreshRate: takes UInt32,UInt32,Double — can't bridge via perform()
+    // Use plain init() and probe properties separately
+    let mode = modeClass.init()
+    // Can't set width/height/refreshRate via KVC on CGVirtualDisplayMode (readonly props)
+    // The mode created via init() may be empty but enough to test applySettings: call
+    log("CGVirtualDisplayMode created (empty — initWithWidth:height:refreshRate: requires direct ObjC)", ok: true)
+
     guard let settingsClass = NSClassFromString("CGVirtualDisplaySettings") as? NSObject.Type else {
         log("CGVirtualDisplaySettings not found — skipping settings test")
         return
@@ -130,20 +172,49 @@ func testVirtualDisplayCreation() {
 
     let settings = settingsClass.init()
     settings.setValue(false, forKey: "hiDPI")
-    log("CGVirtualDisplaySettings configured (hiDPI: false)", ok: true)
+    settings.setValue([mode], forKey: "modes")
+    log("CGVirtualDisplaySettings configured (hiDPI: false, 1 mode)", ok: true)
 
-    // Tentar aplicar as settings
-    let applySelector = NSSelectorFromString("applySettings:displayModes:")
+    // Aplicar settings — seletor correto é applySettings: (sem displayModes:)
+    let applySelector = NSSelectorFromString("applySettings:")
     if display.responds(to: applySelector) {
-        log("applySettings:displayModes: selector found", ok: true)
-        // Aplicar via performSelector — cuidado com retenção
+        log("applySettings: selector found ✅", ok: true)
+        display.perform(applySelector, with: settings)
+        log("applySettings: called — checking displayID again...")
+        if let displayID = display.value(forKey: "displayID") as? CGDirectDisplayID {
+            check(displayID != kCGNullDirectDisplay, "Display ID valid after applySettings:")
+        }
     } else {
-        log("applySettings:displayModes: selector not found", ok: false)
-        log("   The API shape may differ — investigate display mode setup")
+        log("applySettings: selector not found", ok: false)
     }
 
     // Manter vivo por 2 segundos para verificar no Activity Monitor / System Info
     log("Keeping display alive for 2 seconds — check System Preferences > Displays")
+
+    // *** Verificar display lists enquanto o virtual display ainda está vivo ***
+    var activeWhileAlive = [CGDirectDisplayID](repeating: 0, count: 16)
+    var activeCountWhileAlive: UInt32 = 0
+    CGGetActiveDisplayList(16, &activeWhileAlive, &activeCountWhileAlive)
+    let activeList = activeWhileAlive.prefix(Int(activeCountWhileAlive)).map { $0 }
+    log("Active displays while alive: \(activeList)")
+
+    var onlineWhileAlive = [CGDirectDisplayID](repeating: 0, count: 16)
+    var onlineCountWhileAlive: UInt32 = 0
+    CGGetOnlineDisplayList(16, &onlineWhileAlive, &onlineCountWhileAlive)
+    let onlineList = onlineWhileAlive.prefix(Int(onlineCountWhileAlive)).map { $0 }
+    log("Online displays while alive: \(onlineList)")
+
+    if let displayID = display.value(forKey: "displayID") as? CGDirectDisplayID {
+        let inActive = activeList.contains(displayID)
+        let inOnline = onlineList.contains(displayID)
+        check(inActive, "Virtual display (ID:\(displayID)) in CGGetActiveDisplayList")
+        check(inOnline, "Virtual display (ID:\(displayID)) in CGGetOnlineDisplayList")
+        if !inActive && !inOnline {
+            log("   → Display ID exists but not in system lists")
+            log("   → Possible cause: missing entitlement or mode configuration required")
+        }
+    }
+
     Thread.sleep(forTimeInterval: 2.0)
 
     // Destruir o display

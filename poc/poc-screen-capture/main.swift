@@ -148,7 +148,7 @@ struct PoCScreenCapture {
         print("      Watch for:")
         print("      - Actualfps close to 30")
         print("      - IOSurface-backed = YES (zero-copy path)")
-        print("      - Pixel format NV12 (0x34323076)\n")
+        print("      - Pixel format NV12 420f (0x34323066 = kCVPixelFormatType_420YpCbCr8BiPlanarFullRange)\n")
 
         let captureStart = Date()
 

@@ -115,7 +115,7 @@ public final class VideoEncoder: @unchecked Sendable {
     // MARK: - Private Helpers
 
     private func applyProperties(to session: VTCompressionSession, config: StreamConfig) throws {
-        var properties: [CFString: Any] = [
+        let properties: [CFString: Any] = [
             // Modo real-time — essencial para streaming
             kVTCompressionPropertyKey_RealTime: kCFBooleanTrue!,
 

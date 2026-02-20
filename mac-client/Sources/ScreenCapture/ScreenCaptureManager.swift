@@ -152,11 +152,20 @@ extension ScreenCaptureManager: SCStreamOutput {
         didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
         of outputType: SCStreamOutputType
     ) {
-        guard outputType == .screen,
-              let pixelBuffer = sampleBuffer.imageBuffer else {
-            print("[SCStream] dropped: outputType=\(outputType) hasBuffer=\(sampleBuffer.imageBuffer != nil)")
+        guard outputType == .screen else { return }
+
+        // macOS 14 SCK dirty-rect optimisation: skip timing-only buffers
+        // that have no pixel data (status != .complete).
+        if let statusNum = CMGetAttachment(
+            sampleBuffer,
+            key: SCStreamFrameInfo.status as CFString,
+            attachmentModeOut: nil
+        ) as? NSNumber,
+           SCFrameStatus(rawValue: statusNum.intValue) != .complete {
             return
         }
+
+        guard let pixelBuffer = sampleBuffer.imageBuffer else { return }
 
         let frame = CapturedFrame(
             pixelBuffer: pixelBuffer,
@@ -165,13 +174,6 @@ extension ScreenCaptureManager: SCStreamOutput {
             height: CVPixelBufferGetHeight(pixelBuffer)
         )
 
-        // One-time log
-        let pts = sampleBuffer.presentationTimeStamp.seconds
-        if pts < 1.0 {
-            print("[SCStream] first frame \(frame.width)x\(frame.height) pts=\(pts)")
-        }
-
-        // Métricas de FPS + frame delivery on MainActor
         Task { @MainActor [weak self] in
             self?.updateFPS()
             self?.frameHandler?(frame)

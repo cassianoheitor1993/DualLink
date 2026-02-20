@@ -27,6 +27,7 @@ echo -n "APPL????" > "$CONTENTS/PkgInfo"
 
 echo "▶ Removing quarantine..."
 xattr -cr "$APP_DIR" 2>/dev/null || true
+find "$APP_DIR" -name "*.DS_Store" -delete 2>/dev/null || true
 
 echo "▶ Codesigning (ad-hoc)..."
 # Sign binary first, then wrap the bundle

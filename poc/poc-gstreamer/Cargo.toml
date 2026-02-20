@@ -1,0 +1,18 @@
+[package]
+name = "poc-gstreamer"
+version = "0.1.0"
+edition = "2021"
+description = "DualLink Sprint 0.3 — GStreamer H.264 decode latency benchmark"
+
+[[bin]]
+name = "poc-gstreamer"
+path = "src/main.rs"
+
+[dependencies]
+# GStreamer Rust bindings
+gstreamer = "0.22"
+gstreamer-app = "0.22"
+gstreamer-video = "0.22"
+
+# Utilities
+anyhow = "1"

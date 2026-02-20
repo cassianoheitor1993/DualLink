@@ -2,27 +2,31 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Result;
-use duallink_core::EncodedFrame;
+use duallink_core::{EncodedFrame, detect_usb_ethernet};
 use duallink_decoder::DecoderFactory;
 use duallink_transport::{DualLinkReceiver, SignalingEvent};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
-/// Main receiver loop — Sprint 2.3 (display + input forwarding)
+/// Main receiver loop — Phase 3 (display + input forwarding + USB transport)
 ///
-/// 1. Bind UDP:7878 (video) + TCP:7879 (signaling)
-/// 2. Wait for hello handshake → get StreamConfig
-/// 3. Initialise GStreamer display decoder (vaapih264dec → autovideosink)
-/// 4. Receive → decode → display (single pipeline)
-/// 5. Capture mouse/keyboard from GStreamer window → forward to Mac via TCP
+/// 1. Detect USB Ethernet (CDC-NCM) if available
+/// 2. Bind UDP:7878 (video) + TCP:7879 (signaling) on all interfaces
+/// 3. Wait for hello handshake → get StreamConfig
+/// 4. Initialise GStreamer display decoder (vaapih264dec → autovideosink)
+/// 5. Receive → decode → display (single pipeline)
+/// 6. Capture mouse/keyboard from GStreamer window → forward to Mac via TCP
 pub async fn run() -> Result<()> {
-    // ── Detect USB Ethernet (Phase 3) ──────────────────────────────────────
-    if let Some(usb_info) = duallink_core::detect_usb_ethernet() {
-        info!("🔌 USB Ethernet detected: {} → {} (peer: {})",
-              usb_info.interface_name, usb_info.local_ip, usb_info.peer_ip);
-        info!("   USB-C transport will be preferred (lower latency)");
+    // ── Detect USB Ethernet for low-latency transport ──────────────────────
+    if let usb = detect_usb_ethernet() {
+        info!(
+            "USB Ethernet detected: {} → {} (peer: {})",
+            usb.interface_name, usb.local_ip, usb.peer_ip
+        );
+        info!("Mac can connect via USB at {} for ~1ms latency", usb.local_ip);
     } else {
-        info!("No USB Ethernet detected — using Wi-Fi transport");
+        info!("No USB Ethernet detected — using Wi-Fi only");
+        info!("For USB transport, connect a USB-C Ethernet adapter and configure 10.0.1.x subnet");
     }
 
     info!("Binding transport (UDP:7878 video, TCP:7879 signaling)...");

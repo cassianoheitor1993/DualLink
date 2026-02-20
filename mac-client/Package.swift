@@ -25,6 +25,7 @@ let package = Package(
                 "Streaming",
                 "Signaling",
                 "Discovery",
+                "InputInjection",
             ],
             path: "Sources/DualLinkApp",
             resources: []

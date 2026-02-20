@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!-- Background circle -->
+  <circle cx="64" cy="64" r="60" fill="#1a1a2e"/>
+
+  <!-- Left monitor -->
+  <rect x="8" y="34" width="44" height="32" rx="4" ry="4" fill="none" stroke="#4a9eff" stroke-width="3.5"/>
+  <rect x="22" y="66" width="16" height="5" rx="1" fill="#4a9eff"/>
+  <rect x="16" y="71" width="28" height="3" rx="1.5" fill="#4a9eff"/>
+  <!-- Left screen content (macOS) -->
+  <rect x="11" y="37" width="38" height="26" rx="2" fill="#0d2240"/>
+  <rect x="13" y="39" width="34" height="3" rx="1" fill="#4a9eff" opacity="0.6"/>
+  <rect x="13" y="44" width="24" height="2" rx="1" fill="#4a9eff" opacity="0.35"/>
+  <rect x="13" y="48" width="30" height="2" rx="1" fill="#4a9eff" opacity="0.35"/>
+  <rect x="13" y="52" width="20" height="2" rx="1" fill="#4a9eff" opacity="0.35"/>
+  <!-- Apple logo hint -->
+  <circle cx="41" cy="41" r="2.5" fill="#4a9eff" opacity="0.5"/>
+
+  <!-- Right monitor (Linux) -->
+  <rect x="76" y="34" width="44" height="32" rx="4" ry="4" fill="none" stroke="#00d4aa" stroke-width="3.5"/>
+  <rect x="90" y="66" width="16" height="5" rx="1" fill="#00d4aa"/>
+  <rect x="84" y="71" width="28" height="3" rx="1.5" fill="#00d4aa"/>
+  <!-- Right screen content -->
+  <rect x="79" y="37" width="38" height="26" rx="2" fill="#0d2a20"/>
+  <!-- Terminal-like lines -->
+  <rect x="81" y="39" width="6" height="2" rx="1" fill="#00d4aa" opacity="0.8"/>
+  <rect x="89" y="39" width="16" height="2" rx="1" fill="#00d4aa" opacity="0.4"/>
+  <rect x="81" y="43" width="22" height="2" rx="1" fill="#00d4aa" opacity="0.4"/>
+  <rect x="81" y="47" width="18" height="2" rx="1" fill="#00d4aa" opacity="0.4"/>
+  <rect x="81" y="51" width="26" height="2" rx="1" fill="#00d4aa" opacity="0.4"/>
+  <!-- Tux penguin hint -->
+  <circle cx="109" cy="41" r="2.5" fill="#00d4aa" opacity="0.5"/>
+
+  <!-- Link chain between monitors -->
+  <path d="M55 50 Q64 44 73 50" fill="none" stroke="#a78bfa" stroke-width="3" stroke-linecap="round"/>
+  <path d="M55 53 Q64 59 73 53" fill="none" stroke="#a78bfa" stroke-width="3" stroke-linecap="round"/>
+  <!-- Chain links -->
+  <ellipse cx="59" cy="51.5" rx="5" ry="3" fill="none" stroke="#a78bfa" stroke-width="2.5"/>
+  <ellipse cx="69" cy="51.5" rx="5" ry="3" fill="none" stroke="#a78bfa" stroke-width="2.5"/>
+
+  <!-- WiFi arcs below -->
+  <path d="M50 90 Q64 82 78 90" fill="none" stroke="#4a9eff" stroke-width="2.5" stroke-linecap="round" opacity="0.9"/>
+  <path d="M55 96 Q64 90 73 96" fill="none" stroke="#4a9eff" stroke-width="2.5" stroke-linecap="round" opacity="0.7"/>
+  <circle cx="64" cy="101" r="2.5" fill="#4a9eff"/>
+
+  <!-- "DL" label -->
+  <text x="64" y="120" font-family="sans-serif" font-size="9" font-weight="bold"
+        text-anchor="middle" fill="#a78bfa" letter-spacing="2">DUALLINK</text>
+</svg>

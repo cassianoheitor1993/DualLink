@@ -1,0 +1,13 @@
+[Unit]
+Description=DualLink USB Gadget (CDC-NCM Ethernet)
+After=sys-kernel-config.mount
+Wants=sys-kernel-config.mount
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/duallink/setup-usb-gadget.sh
+ExecStop=/opt/duallink/teardown-usb-gadget.sh
+
+[Install]
+WantedBy=multi-user.target

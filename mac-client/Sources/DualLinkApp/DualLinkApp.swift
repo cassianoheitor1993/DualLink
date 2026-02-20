@@ -6,6 +6,7 @@ import VideoEncoder
 import Streaming
 import Signaling
 import InputInjection
+import Transport
 
 @main
 struct DualLinkApp: App {
@@ -51,6 +52,8 @@ final class AppState: ObservableObject {
     let videoSender           = VideoSender()
     let signalingClient       = SignalingClient()
     let inputInjector         = InputInjectionManager()
+    let transportDiscovery    = TransportDiscovery()
+    let transportBenchmark    = TransportBenchmark()
 
     // MARK: - Private
 
@@ -60,6 +63,9 @@ final class AppState: ObservableObject {
     private var lastHost: String = ""
     private var lastConfig: StreamConfig = .default
     private var lastDisplayMode: DisplayMode = .extend
+    private var lastTransportMode: TransportSelection = .auto
+    private var lastWifiHost: String? = nil
+    private var activeConnectionMode: ConnectionMode = .wifi
     private var reconnectAttempt: Int = 0
     private let maxReconnectAttempts: Int = 5
 
@@ -67,19 +73,67 @@ final class AppState: ObservableObject {
 
     /// Full pipeline: virtual display → capture → encode → UDP send.
     /// - Parameters:
-    ///   - host: IP address of the Linux receiver.
     ///   - config: Stream parameters.
     ///   - displayMode: Mirror (capture main screen) or Extend (create virtual display).
-    func connectAndStream(to host: String, config: StreamConfig = .default, displayMode: DisplayMode = .extend) async {
+    ///   - transportMode: Auto, USB, or Wi-Fi.
+    ///   - wifiHost: Wi-Fi IP of the receiver (needed for Wi-Fi/Auto mode).
+    func connectAndStream(config: StreamConfig = .default, displayMode: DisplayMode = .extend,
+                          transportMode: TransportSelection = .auto, wifiHost: String? = nil) async {
         guard case .idle = connectionState else { return }
         lastError = nil
         sessionID = UUID().uuidString
-        lastHost = host
         lastConfig = config
         lastDisplayMode = displayMode
+        lastTransportMode = transportMode
+        lastWifiHost = wifiHost
         reconnectAttempt = 0
 
         do {
+            // ── 0. Resolve transport endpoint ──────────────────────────────────
+            let host: String
+            let connMode: ConnectionMode
+
+            switch transportMode {
+            case .usb:
+                // USB only — probe USB Ethernet
+                guard let usb = transportDiscovery.detectUSBEthernet() else {
+                    throw DualLinkError.streamError("No USB Ethernet detected. Is the USB-C cable connected and gadget configured?")
+                }
+                let reachable = await transportDiscovery.probeReachability(host: usb.peerIP, timeout: 2.0)
+                guard reachable else {
+                    throw DualLinkError.streamError("USB Ethernet detected (\(usb.interfaceName)) but receiver not reachable at \(usb.peerIP)")
+                }
+                host = usb.peerIP
+                connMode = .usb
+                print("[DualLink] Transport: USB via \(usb.interfaceName) → \(host)")
+
+            case .wifi:
+                // Wi-Fi only
+                guard let wifiHost, !wifiHost.isEmpty else {
+                    throw DualLinkError.streamError("No Wi-Fi IP provided")
+                }
+                host = wifiHost
+                connMode = .wifi
+                print("[DualLink] Transport: Wi-Fi → \(host)")
+
+            case .auto:
+                // Try USB first, fallback to Wi-Fi
+                if let endpoint = await transportDiscovery.bestEndpoint(wifiHost: wifiHost) {
+                    host = endpoint.host
+                    connMode = endpoint.mode
+                    print("[DualLink] Transport: Auto selected \(connMode.rawValue) → \(host) (latency ~\(Int(endpoint.latencyEstimate * 1000))ms)")
+                } else if let wifiHost, !wifiHost.isEmpty {
+                    // No endpoints discovered but we have a Wi-Fi host — try it directly
+                    host = wifiHost
+                    connMode = .wifi
+                    print("[DualLink] Transport: Auto fallback to Wi-Fi → \(host)")
+                } else {
+                    throw DualLinkError.streamError("No transport available. Check USB cable or enter Wi-Fi IP.")
+                }
+            }
+
+            lastHost = host
+            activeConnectionMode = connMode
             // ── 1. Connect Signaling (TCP) ─────────────────────────────────────
             connectionState = .connecting(
                 peer: PeerInfo(id: sessionID, name: host, address: host, port: 7879),
@@ -184,8 +238,17 @@ final class AppState: ObservableObject {
                 sessionID: sessionID,
                 peer: PeerInfo(id: sessionID, name: host, address: host, port: 7878),
                 config: config,
-                connectionMode: .wifi
+                connectionMode: connMode
             ))
+
+            // ── 9. Background: measure transport latency ───────────────────
+            Task.detached { [weak self] in
+                guard let self else { return }
+                let result = await self.transportBenchmark.measureLatency(
+                    host: host, count: 5, mode: connMode
+                )
+                print("[DualLink] Transport benchmark: \(result.summary)")
+            }
 
         } catch {
             let msg = error.localizedDescription
@@ -236,6 +299,23 @@ final class AppState: ObservableObject {
 
         guard !Task.isCancelled else { return }
 
+        // ── Fallback: try to re-discover best transport ───────────────────
+        var reconnectHost = lastHost
+        if lastTransportMode == .auto || lastTransportMode == .usb {
+            // Re-check if USB is still available; if not, fall back to Wi-Fi
+            if let endpoint = await transportDiscovery.bestEndpoint(wifiHost: lastWifiHost) {
+                reconnectHost = endpoint.host
+                activeConnectionMode = endpoint.mode
+                print("[DualLink] Reconnect: using \(endpoint.mode.rawValue) → \(reconnectHost)")
+            } else if let wifiHost = lastWifiHost, !wifiHost.isEmpty {
+                // USB gone, fall back to Wi-Fi
+                reconnectHost = wifiHost
+                activeConnectionMode = .wifi
+                print("[DualLink] Reconnect: USB unavailable, falling back to Wi-Fi → \(reconnectHost)")
+            }
+        }
+        lastHost = reconnectHost
+
         do {
             try await signalingClient.connect(host: lastHost)
             try videoEncoder.configure(config: lastConfig)
@@ -272,7 +352,7 @@ final class AppState: ObservableObject {
                 sessionID: sessionID,
                 peer: PeerInfo(id: sessionID, name: lastHost, address: lastHost, port: 7878),
                 config: lastConfig,
-                connectionMode: .wifi
+                connectionMode: activeConnectionMode
             ))
             print("[DualLink] Reconnected successfully!")
         } catch {

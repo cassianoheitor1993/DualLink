@@ -26,6 +26,7 @@ let package = Package(
                 "Signaling",
                 "Discovery",
                 "InputInjection",
+                "Transport",
             ],
             path: "Sources/DualLinkApp",
             resources: []
@@ -93,6 +94,13 @@ let package = Package(
             name: "InputInjection",
             dependencies: ["DualLinkCore"],
             path: "Sources/InputInjection"
+        ),
+
+        // MARK: — Transport (USB/Wi-Fi detection — Phase 3)
+        .target(
+            name: "Transport",
+            dependencies: ["DualLinkCore"],
+            path: "Sources/Transport"
         ),
 
         // MARK: — Tests

@@ -16,6 +16,15 @@ use tracing::{debug, info, warn};
 /// 4. Receive → decode → display (single pipeline)
 /// 5. Capture mouse/keyboard from GStreamer window → forward to Mac via TCP
 pub async fn run() -> Result<()> {
+    // ── Detect USB Ethernet (Phase 3) ──────────────────────────────────────
+    if let Some(usb_info) = duallink_core::detect_usb_ethernet() {
+        info!("🔌 USB Ethernet detected: {} → {} (peer: {})",
+              usb_info.interface_name, usb_info.local_ip, usb_info.peer_ip);
+        info!("   USB-C transport will be preferred (lower latency)");
+    } else {
+        info!("No USB Ethernet detected — using Wi-Fi transport");
+    }
+
     info!("Binding transport (UDP:7878 video, TCP:7879 signaling)...");
 
     let (_recv, mut frame_rx, mut event_rx, input_sender) = DualLinkReceiver::start().await?;

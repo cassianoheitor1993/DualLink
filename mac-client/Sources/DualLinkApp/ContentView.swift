@@ -3,6 +3,14 @@ import AppKit
 import DualLinkCore
 import VirtualDisplay
 import ScreenCapture
+import Transport
+
+/// User-facing transport selection (includes Auto mode).
+enum TransportSelection: String, CaseIterable {
+    case auto = "Auto"
+    case usb  = "USB"
+    case wifi = "Wi-Fi"
+}
 
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
@@ -11,6 +19,7 @@ struct ContentView: View {
     @State private var displayMode: DisplayMode = .extend
     @State private var selectedResolution: Resolution = .fhd
     @State private var selectedCodec: VideoCodec = .h264
+    @State private var transportMode: TransportSelection = .auto
 
     var body: some View {
         VStack(spacing: 0) {
@@ -24,7 +33,8 @@ struct ContentView: View {
                     use60fps: $use60fps,
                     displayMode: $displayMode,
                     selectedResolution: $selectedResolution,
-                    selectedCodec: $selectedCodec
+                    selectedCodec: $selectedCodec,
+                    transportMode: $transportMode
                 )
                 Divider()
             }
@@ -33,7 +43,8 @@ struct ContentView: View {
                 use60fps: use60fps,
                 displayMode: displayMode,
                 selectedResolution: selectedResolution,
-                selectedCodec: selectedCodec
+                selectedCodec: selectedCodec,
+                transportMode: transportMode
             )
         }
         .frame(width: 380)
@@ -56,18 +67,35 @@ private struct ConnectView: View {
     @Binding var displayMode: DisplayMode
     @Binding var selectedResolution: Resolution
     @Binding var selectedCodec: VideoCodec
+    @Binding var transportMode: TransportSelection
     @FocusState private var isFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Linux Receiver IP")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            TextField("192.168.1.x", text: $receiverHost)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.body, design: .monospaced))
-                .focused($isFocused)
-                .onAppear { isFocused = true }
+            // Transport mode picker
+            HStack(spacing: 8) {
+                Image(systemName: "cable.connector")
+                    .foregroundStyle(.blue)
+                Picker("", selection: $transportMode) {
+                    ForEach(TransportSelection.allCases, id: \.self) { mode in
+                        Text(mode.rawValue).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            }
+
+            // Wi-Fi IP field (hidden when USB-only)
+            if transportMode != .usb {
+                Text("Linux Receiver IP")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                TextField("192.168.1.x", text: $receiverHost)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(.body, design: .monospaced))
+                    .focused($isFocused)
+                    .onAppear { isFocused = true }
+            }
 
             // Display mode picker
             HStack(spacing: 8) {
@@ -134,7 +162,7 @@ private struct HeaderView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("DualLink")
                     .font(.headline)
-                Text("Wireless Display")
+                Text("Wireless & USB Display")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -261,6 +289,7 @@ private struct ControlsView: View {
     let displayMode: DisplayMode
     let selectedResolution: Resolution
     let selectedCodec: VideoCodec
+    let transportMode: TransportSelection
 
     var body: some View {
         HStack(spacing: 8) {
@@ -275,17 +304,27 @@ private struct ControlsView: View {
                 .tint(.red)
             } else {
                 Button {
-                    guard !receiverHost.isEmpty else { return }
                     let fps = use60fps ? 60 : 30
                     let config = StreamConfig.recommended(resolution: selectedResolution, fps: fps, codec: selectedCodec)
-                    Task { await appState.connectAndStream(to: receiverHost, config: config, displayMode: displayMode) }
+                    let wifiHost = transportMode == .usb ? nil : (receiverHost.isEmpty ? nil : receiverHost)
+                    Task {
+                        await appState.connectAndStream(
+                            config: config,
+                            displayMode: displayMode,
+                            transportMode: transportMode,
+                            wifiHost: wifiHost
+                        )
+                    }
                 } label: {
                     let label = displayMode == .extend ? "Start Extending" : "Start Mirroring"
                     Label(label, systemImage: "play.fill")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(receiverHost.isEmpty || appState.connectionState == .discovering)
+                .disabled(
+                    (transportMode != .usb && receiverHost.isEmpty) ||
+                    appState.connectionState == .discovering
+                )
             }
 
             Menu {

@@ -11,6 +11,12 @@ import InputInjection
 struct DualLinkApp: App {
     @StateObject private var appState = AppState()
 
+    init() {
+        // Prompt for Accessibility permission on first launch.
+        // CGEvent injection requires this to control the pointer/keyboard.
+        InputInjectionManager.ensureAccessibility(prompt: true)
+    }
+
     var body: some Scene {
         WindowGroup {
             ContentView()

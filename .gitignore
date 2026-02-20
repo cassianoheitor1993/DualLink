@@ -1,0 +1,28 @@
+.DS_Store
+*.swp
+*.swo
+
+# macOS
+mac-client/.build/
+mac-client/DerivedData/
+mac-client/*.xcuserdata/
+mac-client/**/*.xcuserdata/
+
+# Rust
+linux-receiver/target/
+shared-protocol/target/
+
+# IDE
+.idea/
+.vscode/settings.json
+
+# Build artifacts
+*.o
+*.d
+*.dylib
+*.so
+*.a
+
+# Temporary
+tmp/
+*.log

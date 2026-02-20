@@ -163,8 +163,10 @@ public final class VideoEncoder: @unchecked Sendable {
 private let compressionOutputCallback: VTCompressionOutputCallback = { refcon, _, status, flags, sampleBuffer in
     guard status == noErr,
           let sampleBuffer,
-          let refcon else { return }
-
+          let refcon else {
+        print("[VTEncoder] callback skipped: status=\(status) hasBuffer=\(sampleBuffer != nil)")
+        return
+    }
     let encoder = Unmanaged<VideoEncoder>.fromOpaque(refcon).takeUnretainedValue()
     encoder.handleEncodedSampleBuffer(sampleBuffer, flags: flags)
 }

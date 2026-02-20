@@ -41,6 +41,5 @@ codesign --force --sign - \
 echo "▶ Verifying signature..."
 codesign --verify --deep --strict "$APP_DIR" && echo "  Signature OK"
 
-echo "▶ Launching..."
-open "$APP_DIR"
-echo "✓ DualLink.app launched"
+echo "▶ Launching (foreground — Ctrl+C to stop)..."
+exec "$MACOS/DualLink"

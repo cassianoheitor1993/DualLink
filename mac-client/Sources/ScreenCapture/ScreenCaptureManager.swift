@@ -153,7 +153,10 @@ extension ScreenCaptureManager: SCStreamOutput {
         of outputType: SCStreamOutputType
     ) {
         guard outputType == .screen,
-              let pixelBuffer = sampleBuffer.imageBuffer else { return }
+              let pixelBuffer = sampleBuffer.imageBuffer else {
+            print("[SCStream] dropped: outputType=\(outputType) hasBuffer=\(sampleBuffer.imageBuffer != nil)")
+            return
+        }
 
         let frame = CapturedFrame(
             pixelBuffer: pixelBuffer,
@@ -161,6 +164,12 @@ extension ScreenCaptureManager: SCStreamOutput {
             width: CVPixelBufferGetWidth(pixelBuffer),
             height: CVPixelBufferGetHeight(pixelBuffer)
         )
+
+        // One-time log
+        let pts = sampleBuffer.presentationTimeStamp.seconds
+        if pts < 1.0 {
+            print("[SCStream] first frame \(frame.width)x\(frame.height) pts=\(pts)")
+        }
 
         // Métricas de FPS + frame delivery on MainActor
         Task { @MainActor [weak self] in

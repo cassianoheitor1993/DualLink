@@ -224,6 +224,30 @@
   - PIN is ephemeral — regenerated on each receiver restart
 - **Status:** ✅ Code complete — ready for integration testing
 
+### Sprint 4.2 — Packaging & CI ✅
+- **Goal:** Install the receiver as a system service; automate builds via CI
+- **Linux packaging (`infra/linux/`):**
+  - `install.sh` — builds if needed, installs binary to `/usr/local/bin/`,
+    installs systemd user service, enables lingering for boot autostart.
+    Supports `--uninstall` for clean removal.
+  - `duallink-receiver.service` — systemd user unit: auto-restart on failure,
+    display env vars (`DISPLAY`, `WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR`), journald logging
+- **CI (`.github/workflows/ci.yml`):**
+  - `linux-receiver` job: Ubuntu 24.04, GStreamer deps, `cargo fmt` + `cargo clippy -D warnings`
+    + `cargo build --release`, uploads binary artifact (14-day retention)
+  - `mac-client` job: macOS 14 (Apple Silicon), `swift build -c release` + `swift test`
+  - `release` job: triggers on `v*` tags — bundles binary + install script into
+    `.tar.gz`, publishes GitHub Release with auto-generated notes
+  - Cargo + Swift build caches for fast incremental CI runs
+- **Usage:**
+  ```bash
+  sudo infra/linux/install.sh              # install & start
+  systemctl --user status duallink-receiver
+  journalctl --user -u duallink-receiver -f
+  sudo infra/linux/install.sh --uninstall  # remove
+  ```
+- **Status:** ✅ Complete
+
 ---
 
 ## Hardware Tested

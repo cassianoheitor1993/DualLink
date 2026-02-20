@@ -1,0 +1,120 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ── Linux Receiver (Rust) ──────────────────────────────────────────────
+  linux-receiver:
+    name: Linux Receiver
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install GStreamer dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev \
+            libgstreamer-plugins-bad1.0-dev \
+            gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-bad \
+            gstreamer1.0-plugins-ugly \
+            gstreamer1.0-libav \
+            libavcodec-dev \
+            pkg-config
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Cargo registry & build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            linux-receiver/target
+          key: linux-${{ runner.os }}-cargo-${{ hashFiles('linux-receiver/Cargo.lock') }}
+          restore-keys: linux-${{ runner.os }}-cargo-
+
+      - name: cargo fmt check
+        run: cargo fmt --all --check
+        working-directory: linux-receiver
+
+      - name: cargo clippy
+        run: cargo clippy --release --all-targets -- -D warnings
+        working-directory: linux-receiver
+
+      - name: cargo build --release
+        run: cargo build --release -p duallink-app
+        working-directory: linux-receiver
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: duallink-receiver-linux-x86_64
+          path: linux-receiver/target/release/duallink-receiver
+          retention-days: 14
+
+  # ── macOS Client (Swift) ──────────────────────────────────────────────
+  mac-client:
+    name: macOS Client
+    runs-on: macos-14       # Apple Silicon runner (M1)
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode version
+        run: sudo xcode-select -s /Applications/Xcode_16.app/Contents/Developer
+
+      - name: Cache Swift build
+        uses: actions/cache@v4
+        with:
+          path: mac-client/.build
+          key: macos-swift-${{ hashFiles('mac-client/Package.resolved') }}
+          restore-keys: macos-swift-
+
+      - name: swift build
+        run: swift build -c release
+        working-directory: mac-client
+
+      - name: swift test
+        run: swift test
+        working-directory: mac-client
+
+  # ── Release: build & upload on version tags ───────────────────────────
+  release:
+    name: Release
+    needs: [linux-receiver, mac-client]
+    runs-on: ubuntu-24.04
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Linux binary
+        uses: actions/download-artifact@v4
+        with:
+          name: duallink-receiver-linux-x86_64
+          path: dist/
+
+      - name: Create release archive
+        run: |
+          chmod +x dist/duallink-receiver
+          cp infra/linux/install.sh dist/
+          cp infra/linux/duallink-receiver.service dist/
+          tar -czf duallink-receiver-${{ github.ref_name }}-linux-x86_64.tar.gz -C dist .
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: duallink-receiver-${{ github.ref_name }}-linux-x86_64.tar.gz
+          generate_release_notes: true

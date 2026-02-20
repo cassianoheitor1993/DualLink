@@ -59,7 +59,7 @@ public final class InputInjectionManager: @unchecked Sendable {
         let point = mapToDisplay(x: x, y: y)
         guard let event = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
                                    mouseCursorPosition: point, mouseButton: .left) else { return }
-        event.post(tap: .cghidEventTap)
+        event.post(tap: .cgSessionEventTap)
     }
 
     private func injectMouseButton(x: Double, y: Double, button: MouseButton, isDown: Bool) {
@@ -67,15 +67,14 @@ public final class InputInjectionManager: @unchecked Sendable {
         let (eventType, cgButton) = mouseEventParams(button: button, isDown: isDown)
         guard let event = CGEvent(mouseEventSource: nil, mouseType: eventType,
                                    mouseCursorPosition: point, mouseButton: cgButton) else { return }
-        event.post(tap: .cghidEventTap)
+        event.post(tap: .cgSessionEventTap)
     }
 
     private func injectScroll(deltaX: Double, deltaY: Double) {
-        // CGEvent scroll uses discrete units
         guard let event = CGEvent(scrollWheelEvent2Source: nil, units: .pixel,
                                    wheelCount: 2,
-                                   wheel1: Int32(deltaY), wheel2: Int32(deltaX)) else { return }
-        event.post(tap: .cghidEventTap)
+                                   wheel1: Int32(deltaY), wheel2: Int32(deltaX), wheel3: 0) else { return }
+        event.post(tap: .cgSessionEventTap)
     }
 
     // MARK: - Private: Keyboard
@@ -85,7 +84,7 @@ public final class InputInjectionManager: @unchecked Sendable {
         guard let event = CGEvent(keyboardEventSource: nil,
                                    virtualKey: CGKeyCode(macKeycode),
                                    keyDown: isDown) else { return }
-        event.post(tap: .cghidEventTap)
+        event.post(tap: .cgSessionEventTap)
     }
 
     // MARK: - Private: Coordinate Mapping

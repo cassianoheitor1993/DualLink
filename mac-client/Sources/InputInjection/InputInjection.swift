@@ -1,5 +1,6 @@
 import Foundation
 import CoreGraphics
+import ApplicationServices
 import DualLinkCore
 
 // MARK: - InputInjectionManager (Sprint 2.3)
@@ -18,6 +19,23 @@ public final class InputInjectionManager: @unchecked Sendable {
     private var eventsInjected: UInt64 = 0
 
     public init() {}
+
+    // MARK: - Accessibility
+
+    /// Check if the process has Accessibility permission.
+    /// - Parameter prompt: If `true`, shows the macOS system prompt to grant access.
+    /// - Returns: `true` if the app is trusted for Accessibility.
+    @discardableResult
+    public static func ensureAccessibility(prompt: Bool = true) -> Bool {
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): prompt] as CFDictionary
+        let trusted = AXIsProcessTrustedWithOptions(options)
+        if trusted {
+            print("[InputInjection] Accessibility permission: ✅ granted")
+        } else {
+            print("[InputInjection] Accessibility permission: ❌ not granted — input forwarding will not work")
+        }
+        return trusted
+    }
 
     // MARK: - Configure
 

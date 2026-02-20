@@ -156,30 +156,38 @@ Fase 4 ─── Polish, Packaging & Security ────── ~2 semanas
 
 ---
 
-## Fase 3 — Modo USB-C
+## Fase 3 — Modo USB-C (Ethernet Adapter)
 
-**Duração estimada:** 3 semanas
-**Objetivo:** Streaming de alta performance via USB-C para latência mínima.
+**Duração estimada:** 2 semanas
+**Objetivo:** Streaming de alta performance via USB-C Ethernet para latência mínima (~1ms).
 
-### Sprint 3.1 — Transporte USB (Semana 12-13)
+**Decisão técnica:** USB CDC-NCM gadget mode requer hardware com UDC (USB Device Controller).
+O Lenovo Legion 5 Pro tem apenas controladores xHCI (host-only), sem suporte a gadget mode.
+Solução adotada: **USB-C Ethernet adapters** — mesmo transporte TCP/UDP, latência sub-1ms,
+sem alteração de código no pipeline. O Mac conecta via adaptador USB-C→Ethernet (ou par
+USB-C→RJ45) com subnet estático 10.0.1.x.
+
+### Sprint 3.1 — USB Ethernet Transport (Semana 12-13)
 
 | # | Tarefa | Resultado Esperado |
 |---|--------|--------------------|
-| 3.1.1 | Pesquisar USB bulk transfer macOS ↔ Linux | Abordagem técnica definida |
-| 3.1.2 | Implementar canal USB via libusb/IOKit | Transferência de dados via USB |
-| 3.1.3 | Implementar framing protocol sobre USB | Pacotes de vídeo sobre USB |
-| 3.1.4 | Benchmark: throughput USB-C (target > 2Gbps) | Throughput medido e documentado |
+| 3.1.1 | ✅ Pesquisar USB transport (gadget vs adapter) | Adaptador USB-C Ethernet escolhido |
+| 3.1.2 | ✅ Implementar TransportDiscovery (macOS) | Auto-detecção de interface USB Ethernet (10.0.1.x) |
+| 3.1.3 | ✅ Implementar TransportBenchmark | Medição de latência TCP ping (USB vs Wi-Fi) |
+| 3.1.4 | ✅ Implementar detect_usb_ethernet (Linux) | Detecção de interface USB Ethernet via sysfs |
 
 ### Sprint 3.2 — Integração USB no Pipeline (Semana 13-14)
 
 | # | Tarefa | Resultado Esperado |
 |---|--------|--------------------|
-| 3.2.1 | Substituir transport layer (WebRTC → USB) | Pipeline com USB funcional |
-| 3.2.2 | Manter fallback para Wi-Fi | Auto-detecção USB vs Wi-Fi |
-| 3.2.3 | Otimizar latência USB (target < 40ms) | Latência medida e validada |
-| 3.2.4 | Testar estabilidade em uso prolongado | 8h de uso contínuo sem crash |
+| 3.2.1 | ✅ UI: Auto/USB/Wi-Fi transport picker | Seleção de transporte no ContentView |
+| 3.2.2 | ✅ Auto-detecção USB > Wi-Fi com fallback | bestEndpoint() prioriza USB |
+| 3.2.3 | ✅ Reconnect com transport failover | Reconexão automática com re-discovery |
+| 3.2.4 | ✅ Linux startup USB detection log | Receiver imprime status USB Ethernet ao iniciar |
+| 3.2.5 | Benchmark: latência USB Ethernet (target < 5ms) | Latência medida e validada |
+| 3.2.6 | Testar estabilidade em uso prolongado | 8h de uso contínuo sem crash |
 
-**Entregável Fase 3:** Modo USB-C funcionando com latência < 40ms.
+**Entregável Fase 3:** Modo USB-C Ethernet funcionando com latência < 5ms end-to-end.
 
 ---
 

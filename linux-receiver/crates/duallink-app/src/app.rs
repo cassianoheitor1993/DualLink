@@ -18,15 +18,14 @@ use tracing::{debug, info, warn};
 /// 6. Capture mouse/keyboard from GStreamer window → forward to Mac via TCP
 pub async fn run() -> Result<()> {
     // ── Detect USB Ethernet for low-latency transport ──────────────────────
-    if let usb = detect_usb_ethernet() {
+    if let Some(usb) = detect_usb_ethernet() {
         info!(
             "USB Ethernet detected: {} → {} (peer: {})",
             usb.interface_name, usb.local_ip, usb.peer_ip
         );
         info!("Mac can connect via USB at {} for ~1ms latency", usb.local_ip);
     } else {
-        info!("No USB Ethernet detected — using Wi-Fi only");
-        info!("For USB transport, connect a USB-C Ethernet adapter and configure 10.0.1.x subnet");
+        info!("No USB Ethernet detected — using Wi-Fi transport");
     }
 
     info!("Binding transport (UDP:7878 video, TCP:7879 signaling)...");

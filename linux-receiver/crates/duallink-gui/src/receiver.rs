@@ -8,6 +8,29 @@ use duallink_transport::{DualLinkReceiver, SignalingEvent};
 
 use crate::state::{Phase, SharedState};
 
+const SERVICE_NAME: &str = "duallink-receiver.service";
+
+// ── Stop conflicting systemd service ──────────────────────────────────────────
+
+/// Returns `true` if the systemd user service is currently active.
+fn service_is_active() -> bool {
+    std::process::Command::new("systemctl")
+        .args(["--user", "is-active", "--quiet", SERVICE_NAME])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Best-effort: stop the systemd user service so the GUI can bind the ports.
+/// Returns `true` if the stop command exited successfully.
+fn stop_service() -> bool {
+    std::process::Command::new("systemctl")
+        .args(["--user", "stop", SERVICE_NAME])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 // ── Entry point (called from the tokio runtime thread) ─────────────────────────
 
 /// Runs the entire receiver lifecycle.  Never returns under normal operation;
@@ -34,15 +57,56 @@ pub async fn run(state: SharedState, ctx: egui::Context) {
     }
     ctx.request_repaint();
 
+    // ── Step 0b: release ports held by the systemd background service ─────
+    //
+    // The GUI and the background service both bind UDP:7878 + TCP:7879.
+    // If the service is running we stop it first so the GUI can take over.
+    if service_is_active() {
+        {
+            let mut s = state.lock().unwrap();
+            s.push_log(format!(
+                "Stopping {} so the GUI can bind the ports…",
+                SERVICE_NAME
+            ));
+        }
+        ctx.request_repaint();
+
+        let stopped = tokio::task::spawn_blocking(stop_service).await.unwrap_or(false);
+        {
+            let mut s = state.lock().unwrap();
+            if stopped {
+                s.push_log(format!("{} stopped — binding ports…", SERVICE_NAME));
+            } else {
+                s.push_log(format!(
+                    "[WARN] Could not stop {} — port conflict may follow",
+                    SERVICE_NAME
+                ));
+            }
+        }
+        ctx.request_repaint();
+
+        // Give the service a moment to release its sockets
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    }
+
     // ── Step 1: bind ports and generate PIN / TLS key ─────────────────────
     let (recv, mut frame_rx, mut event_rx, input_sender, startup) =
         match DualLinkReceiver::start().await {
             Ok(v) => v,
             Err(e) => {
+                let msg = e.to_string();
+                let hint = if msg.contains("Address already in use") {
+                    format!(
+                        "[ERROR] Port already in use — run:  systemctl --user stop {}  \
+                         then reopen the GUI.",
+                        SERVICE_NAME
+                    )
+                } else {
+                    format!("[ERROR] Failed to start receiver: {}", msg)
+                };
                 let mut s = state.lock().unwrap();
-                let msg = format!("Failed to start receiver: {}", e);
-                s.phase = Phase::Error(msg.clone());
-                s.push_log(format!("[ERROR] {}", msg));
+                s.phase = Phase::Error(msg);
+                s.push_log(hint);
                 ctx.request_repaint();
                 return;
             }

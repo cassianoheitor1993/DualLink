@@ -6,10 +6,10 @@ use thiserror::Error;
 
 /// Interface comum para renderizadores fullscreen.
 ///
-/// Implementações planejadas:
-/// - `WaylandRenderer` — via wgpu com Wayland surface
-/// - `X11Renderer` — via wgpu com X11 surface
-/// - `GstRenderer` — via GStreamer video sink (alternativa simples)
+/// Implementações:
+/// - `GStreamerDisplayRenderer` — Sprint 2.1 — combined decode+display via
+///   GStreamer `autovideosink` (see `duallink-decoder::GStreamerDisplayDecoder`)
+/// - Future: `WgpuRenderer` — direct GPU rendering via wgpu (Sprint 3+)
 #[async_trait]
 pub trait Renderer: Send + Sync {
     /// Inicializa o renderer e abre janela fullscreen.
@@ -39,15 +39,27 @@ pub enum RendererError {
     DisplaySystemUnavailable,
 }
 
+// MARK: - GStreamer Display Renderer (Sprint 2.1)
+//
+// The actual display rendering is done by `GStreamerDisplayDecoder` in the
+// decoder crate, which creates a combined decode+display GStreamer pipeline
+// ending with `autovideosink`.  This avoids unnecessary CPU copies and
+// leverages GStreamer's native windowing/compositing.
+//
+// Pipeline: appsrc → h264parse → vaapih264dec → autovideosink
+//
+// The `Renderer` trait with `DecodedFrame` input is preserved for future use
+// cases (overlays, wgpu-based rendering, custom compositing).
+
 // MARK: - PlaceholderRenderer
 
-/// Placeholder — será substituído pela implementação real na Fase 1 (Sprint 1.2.4).
+/// Placeholder for trait-based rendering (unused when using GStreamer display decoder).
 pub struct PlaceholderRenderer;
 
 #[async_trait]
 impl Renderer for PlaceholderRenderer {
     async fn initialize(&mut self, _width: u32, _height: u32) -> Result<(), RendererError> {
-        Err(RendererError::InitializationFailed("PlaceholderRenderer — not implemented".into()))
+        Err(RendererError::InitializationFailed("PlaceholderRenderer — use GStreamerDisplayDecoder instead".into()))
     }
     async fn present(&mut self, _frame: DecodedFrame) -> Result<(), RendererError> {
         Ok(())

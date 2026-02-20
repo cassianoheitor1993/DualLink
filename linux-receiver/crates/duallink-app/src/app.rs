@@ -8,12 +8,12 @@ use duallink_transport::{DualLinkReceiver, SignalingEvent};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
-/// Main receiver loop — Sprint 1.4
+/// Main receiver loop — Sprint 2.1 (display mode)
 ///
 /// 1. Bind UDP:7878 (video) + TCP:7879 (signaling)
 /// 2. Wait for hello handshake → get StreamConfig
-/// 3. Initialise GStreamer decoder (vaapih264dec → nvh264dec → avdec_h264)
-/// 4. Receive → decode → (renderer Sprint 2)
+/// 3. Initialise GStreamer display decoder (vaapih264dec → autovideosink)
+/// 4. Receive → decode → display (single pipeline)
 pub async fn run() -> Result<()> {
     info!("Binding transport (UDP:7878 video, TCP:7879 signaling)...");
 
@@ -44,53 +44,51 @@ pub async fn run() -> Result<()> {
         }
     };
 
-    // ── Initialise decoder ─────────────────────────────────────────────────
+    // ── Initialise display decoder ─────────────────────────────────────────
     let width  = config.resolution.width;
     let height = config.resolution.height;
 
-    let decoder = tokio::task::spawn_blocking(move || {
-        DecoderFactory::best_available(width, height)
+    let display_decoder = tokio::task::spawn_blocking(move || {
+        DecoderFactory::best_available_with_display(width, height)
     }).await?
-    .map_err(|e| anyhow::anyhow!("Decoder init failed: {}", e))?;
+    .map_err(|e| anyhow::anyhow!("Display decoder init failed: {}", e))?;
 
-    let hw = decoder.is_hardware_accelerated();
-    let elem = decoder.element_name().to_string();
-    info!("Decoder ready: {} hw={}", elem, hw);
+    let hw = display_decoder.is_hardware_accelerated();
+    let elem = display_decoder.element_name().to_string();
+    info!("Display decoder ready: {} hw={} — video window should appear", elem, hw);
 
-    // ── Dedicated decode thread (GStreamer is blocking) ─────────────────────
+    // ── Dedicated decode+display thread (GStreamer is blocking) ─────────────
     let (decode_tx, mut decode_rx) = mpsc::channel::<EncodedFrame>(64);
-    let decoded_count = Arc::new(AtomicU64::new(0));
-    let decode_errors = Arc::new(AtomicU64::new(0));
-    let dc = Arc::clone(&decoded_count);
-    let de = Arc::clone(&decode_errors);
+    let push_errors = Arc::new(AtomicU64::new(0));
+    let pe = Arc::clone(&push_errors);
 
     let decode_handle = tokio::task::spawn_blocking(move || {
         while let Some(frame) = decode_rx.blocking_recv() {
             let sz = frame.data.len();
             let kf = frame.is_keyframe;
-            match decoder.decode_frame(frame) {
-                Ok(_decoded) => {
-                    let n = dc.fetch_add(1, Ordering::Relaxed) + 1;
+            match display_decoder.push_frame(frame) {
+                Ok(()) => {
+                    let n = display_decoder.frames_pushed();
                     if n == 1 {
-                        info!("First frame decoded successfully!");
+                        info!("First frame decoded and displayed!");
                     }
                     if n % 300 == 0 {
-                        info!("Decoded {} frames so far", n);
+                        info!("Displayed {} frames so far", n);
                     }
                 }
                 Err(e) => {
-                    let errs = de.fetch_add(1, Ordering::Relaxed) + 1;
+                    let errs = pe.fetch_add(1, Ordering::Relaxed) + 1;
                     if errs <= 10 || errs % 100 == 0 {
-                        warn!("Decode error #{} ({} bytes, keyframe={}): {}", errs, sz, kf, e);
+                        warn!("Display push error #{} ({} bytes, keyframe={}): {}", errs, sz, kf, e);
                     }
                 }
             }
         }
-        info!("Decode thread exiting");
+        info!("Decode+display thread exiting");
     });
 
-    // ── Main receive → decode loop ─────────────────────────────────────────
-    info!("Streaming — receiving frames...");
+    // ── Main receive → display loop ────────────────────────────────────────
+    info!("Streaming — receiving and displaying frames...");
     let mut frames_received: u64 = 0;
     loop {
         tokio::select! {
@@ -101,13 +99,12 @@ pub async fn run() -> Result<()> {
                     debug!("Frame #{}: {} bytes keyframe={}", frames_received, frame.data.len(), frame.is_keyframe);
                 }
                 if frames_received % 300 == 0 {
-                    let dec = decoded_count.load(Ordering::Relaxed);
-                    let err = decode_errors.load(Ordering::Relaxed);
-                    info!("Stats: received={} decoded={} errors={}", frames_received, dec, err);
+                    let err = push_errors.load(Ordering::Relaxed);
+                    info!("Stats: received={} errors={}", frames_received, err);
                 }
-                // Send to blocking decode thread
+                // Send to blocking decode+display thread
                 if decode_tx.send(frame).await.is_err() {
-                    warn!("Decode thread gone — stopping");
+                    warn!("Decode+display thread gone — stopping");
                     break;
                 }
             }
@@ -139,8 +136,7 @@ pub async fn run() -> Result<()> {
     drop(decode_tx);
     let _ = decode_handle.await;
 
-    let total_dec = decoded_count.load(Ordering::Relaxed);
-    let total_err = decode_errors.load(Ordering::Relaxed);
-    info!("Receiver exited. received={} decoded={} errors={}", frames_received, total_dec, total_err);
+    let total_err = push_errors.load(Ordering::Relaxed);
+    info!("Receiver exited. received={} errors={}", frames_received, total_err);
     Ok(())
 }

@@ -146,15 +146,133 @@ impl Drop for GStreamerDecoder {
     fn drop(&mut self) { let _ = self.pipeline.set_state(gst::State::Null); }
 }
 
+// ── GStreamerDisplayDecoder ────────────────────────────────────────────────────
+
+/// Combined decode + display pipeline — Sprint 2.1
+///
+/// Uses `autovideosink` instead of `appsink` so GStreamer handles window
+/// creation and rendering directly.  Zero extra CPU copies compared to
+/// pulling from `appsink` and re-pushing to a separate display pipeline.
+///
+/// # Pipeline
+/// ```text
+/// appsrc → h264parse → [decoder] → autovideosink sync=false
+/// ```
+///
+/// **Must be called from `tokio::task::spawn_blocking`** — GStreamer
+/// creates the window / event loop on this thread.
+pub struct GStreamerDisplayDecoder {
+    pipeline: gst::Pipeline,
+    appsrc:   AppSrc,
+    element:  &'static str,
+    #[allow(dead_code)]
+    width:    u32,
+    #[allow(dead_code)]
+    height:   u32,
+    frame_count: std::sync::atomic::AtomicU64,
+}
+
+impl GStreamerDisplayDecoder {
+    /// Build and start the decode+display pipeline.
+    pub fn new(element: &'static str, width: u32, height: u32) -> Result<Self, DecoderError> {
+        let pipeline_str = format!(
+            "appsrc name=src format=time is-live=true \
+             ! h264parse \
+             ! {element} \
+             ! autovideosink name=videosink sync=false"
+        );
+
+        let pipeline = gst::parse::launch(&pipeline_str)
+            .map_err(|e| DecoderError::GStreamerPipeline(e.to_string()))?
+            .downcast::<gst::Pipeline>()
+            .map_err(|_| DecoderError::GStreamerPipeline("Not a pipeline".into()))?;
+
+        let appsrc = pipeline
+            .by_name("src")
+            .and_then(|el| el.downcast::<AppSrc>().ok())
+            .ok_or_else(|| DecoderError::GStreamerPipeline("No appsrc".into()))?;
+
+        // Mac sends Annex-B (start-code prefixed) with SPS/PPS on keyframes
+        let src_caps = gst::Caps::builder("video/x-h264")
+            .field("stream-format", "byte-stream")
+            .field("alignment", "au")
+            .build();
+        appsrc.set_caps(Some(&src_caps));
+
+        pipeline
+            .set_state(gst::State::Playing)
+            .map_err(|_| DecoderError::GStreamerPipeline("Failed to start display pipeline".into()))?;
+
+        info!("GStreamerDisplayDecoder({}) ready {}×{} — fullscreen display via autovideosink", element, width, height);
+
+        Ok(Self {
+            pipeline,
+            appsrc,
+            element,
+            width,
+            height,
+            frame_count: std::sync::atomic::AtomicU64::new(0),
+        })
+    }
+
+    /// Push one encoded frame into the pipeline. GStreamer decodes and displays it.
+    pub fn push_frame(&self, frame: EncodedFrame) -> Result<(), DecoderError> {
+        let data_len = frame.data.len();
+        let mut gst_buf = gst::Buffer::with_size(data_len)
+            .map_err(|_| DecoderError::DecodeFailed { reason: "alloc failed".into() })?;
+        {
+            let br = gst_buf.get_mut().unwrap();
+            br.set_pts(gst::ClockTime::from_useconds(frame.timestamp_us));
+            let mut map = br.map_writable()
+                .map_err(|_| DecoderError::DecodeFailed { reason: "map failed".into() })?;
+            map.copy_from_slice(&frame.data);
+        }
+
+        self.appsrc.push_buffer(gst_buf)
+            .map_err(|_| DecoderError::DecodeFailed { reason: "appsrc push failed".into() })?;
+
+        let n = self.frame_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        if n == 1 {
+            info!("First frame pushed to display pipeline ({} bytes)", data_len);
+        }
+
+        Ok(())
+    }
+
+    /// Number of frames pushed so far.
+    pub fn frames_pushed(&self) -> u64 {
+        self.frame_count.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub fn element_name(&self) -> &str { self.element }
+    pub fn is_hardware_accelerated(&self) -> bool { self.element != "avdec_h264" }
+}
+
+impl Drop for GStreamerDisplayDecoder {
+    fn drop(&mut self) {
+        info!("Shutting down display pipeline ({})", self.element);
+        let _ = self.pipeline.set_state(gst::State::Null);
+    }
+}
+
 // ── DecoderFactory ─────────────────────────────────────────────────────────────
 
 pub struct DecoderFactory;
 
 impl DecoderFactory {
     /// Probe and initialise the best available decoder for the given resolution.
+    /// Returns a decoder that produces `DecodedFrame` via `decode_frame()`.
     pub fn best_available(width: u32, height: u32) -> Result<GStreamerDecoder, DecoderError> {
         gst::init().map_err(|e| DecoderError::GStreamerPipeline(e.to_string()))?;
         let element = probe_best_decoder().ok_or(DecoderError::HardwareUnavailable)?;
         GStreamerDecoder::new(element, width, height)
+    }
+
+    /// Probe and initialise a combined decode+display pipeline.
+    /// Frames are decoded AND displayed directly via `autovideosink`.
+    pub fn best_available_with_display(width: u32, height: u32) -> Result<GStreamerDisplayDecoder, DecoderError> {
+        gst::init().map_err(|e| DecoderError::GStreamerPipeline(e.to_string()))?;
+        let element = probe_best_decoder().ok_or(DecoderError::HardwareUnavailable)?;
+        GStreamerDisplayDecoder::new(element, width, height)
     }
 }

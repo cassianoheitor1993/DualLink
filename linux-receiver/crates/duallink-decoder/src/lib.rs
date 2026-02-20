@@ -193,7 +193,7 @@ impl GStreamerDisplayDecoder {
              ! h264parse \
              ! {element} \
              ! {postproc} \
-             ! autovideosink name=videosink sync=true max-lateness=20000000"
+             ! autovideosink name=videosink sync=false"
         );
 
         let pipeline = gst::parse::launch(&pipeline_str)

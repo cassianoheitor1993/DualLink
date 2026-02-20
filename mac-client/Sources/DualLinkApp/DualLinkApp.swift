@@ -108,6 +108,9 @@ final class AppState: ObservableObject {
                         isKeyframe: isKeyframe
                     )
                     let sent = await self.videoSender.framesSent
+                    if sent == 1 {
+                        print("[DualLink] First encoded frame sent: \(nalData.count) bytes keyframe=\(isKeyframe)")
+                    }
                     await MainActor.run {
                         self.framesSent = sent
                         self.streamFPS = self.fpsCounter.tick()
@@ -116,7 +119,11 @@ final class AppState: ObservableObject {
             }
 
             // ── 6. Start Screen Capture ───────────────────────────────────
-            try await screenCaptureManager.startCapture(displayID: displayID, config: config) { [weak self] frame in
+            // TODO: capture virtualDisplayID once user starts placing windows on it.
+            // For E2E pipeline test, capturing the main display confirms the full chain.
+            let captureID = CGMainDisplayID()
+            print("[DualLink] Capturing displayID \(captureID) (main display for E2E test)")
+            try await screenCaptureManager.startCapture(displayID: captureID, config: config) { [weak self] frame in
                 guard let self else { return }
                 self.videoEncoder.encode(
                     pixelBuffer: frame.pixelBuffer,

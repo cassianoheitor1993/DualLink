@@ -15,11 +15,11 @@
 //! `h264parse` converts VideoToolbox AVCC (length-prefixed) → AnnexB automatically.
 
 use bytes::Bytes;
-use duallink_core::{errors::DecoderError, DecodedFrame, EncodedFrame, PixelFormat};
+use duallink_core::{errors::DecoderError, DecodedFrame, EncodedFrame, InputEvent, MouseButton, PixelFormat};
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app::{AppSink, AppSrc};
-use tracing::{info, warn};
+use tracing::{info, debug, warn};
 
 /// Decoder candidates in priority order (GT-2001).
 static DECODER_PRIORITY: &[(&str, &str)] = &[
@@ -259,8 +259,170 @@ impl GStreamerDisplayDecoder {
         self.frame_count.load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// Poll for input (navigation) events from the GStreamer display window.
+    ///
+    /// Returns all pending mouse/keyboard events since the last call.
+    /// Call this regularly from the decode thread (e.g. after each `push_frame`).
+    pub fn poll_input_events(&self) -> Vec<InputEvent> {
+        let mut events = Vec::new();
+        let bus = match self.pipeline.bus() {
+            Some(b) => b,
+            None => return events,
+        };
+
+        // Drain all pending messages
+        while let Some(msg) = bus.pop() {
+            if let gst::MessageView::Element(elem) = msg.view() {
+                if let Some(s) = elem.structure() {
+                    if let Some(ev) = self.parse_navigation_event(s) {
+                        events.push(ev);
+                    }
+                }
+            }
+        }
+        events
+    }
+
+    /// Parse a GStreamer navigation structure into an InputEvent.
+    ///
+    /// Navigation structures have:
+    /// - `event` field: "mouse-move", "mouse-button-press", "mouse-button-release",
+    ///   "mouse-scroll", "key-press", "key-release"
+    /// - `pointer_x`, `pointer_y`: absolute pixel coords (f64)
+    /// - `button`: mouse button number (1=left, 2=middle, 3=right)
+    /// - `key`: keyval string for keyboard events
+    /// - `delta_x`, `delta_y`: scroll deltas
+    fn parse_navigation_event(&self, s: &gst::StructureRef) -> Option<InputEvent> {
+        let event_type = s.get::<&str>("event").ok()?;
+        let w = self.width as f64;
+        let h = self.height as f64;
+
+        match event_type {
+            "mouse-move" => {
+                let px = s.get::<f64>("pointer_x").ok()?;
+                let py = s.get::<f64>("pointer_y").ok()?;
+                Some(InputEvent::MouseMove {
+                    x: (px / w).clamp(0.0, 1.0),
+                    y: (py / h).clamp(0.0, 1.0),
+                })
+            }
+            "mouse-button-press" => {
+                let px = s.get::<f64>("pointer_x").ok()?;
+                let py = s.get::<f64>("pointer_y").ok()?;
+                let btn = s.get::<i32>("button").unwrap_or(1);
+                Some(InputEvent::MouseDown {
+                    x: (px / w).clamp(0.0, 1.0),
+                    y: (py / h).clamp(0.0, 1.0),
+                    button: gst_button_to_mouse_button(btn),
+                })
+            }
+            "mouse-button-release" => {
+                let px = s.get::<f64>("pointer_x").ok()?;
+                let py = s.get::<f64>("pointer_y").ok()?;
+                let btn = s.get::<i32>("button").unwrap_or(1);
+                Some(InputEvent::MouseUp {
+                    x: (px / w).clamp(0.0, 1.0),
+                    y: (py / h).clamp(0.0, 1.0),
+                    button: gst_button_to_mouse_button(btn),
+                })
+            }
+            "mouse-scroll" => {
+                let px = s.get::<f64>("pointer_x").ok()?;
+                let py = s.get::<f64>("pointer_y").ok()?;
+                let dx = s.get::<f64>("delta_x").unwrap_or(0.0);
+                let dy = s.get::<f64>("delta_y").unwrap_or(0.0);
+                Some(InputEvent::MouseScroll {
+                    x: (px / w).clamp(0.0, 1.0),
+                    y: (py / h).clamp(0.0, 1.0),
+                    delta_x: dx,
+                    delta_y: dy,
+                })
+            }
+            "key-press" => {
+                let key = s.get::<&str>("key").ok()?;
+                let keyval = x11_keyval_from_name(key);
+                debug!("Key press: '{}' keyval={}", key, keyval);
+                Some(InputEvent::KeyDown {
+                    keycode: keyval,
+                    text: if key.len() == 1 { Some(key.to_string()) } else { None },
+                })
+            }
+            "key-release" => {
+                let key = s.get::<&str>("key").ok()?;
+                let keyval = x11_keyval_from_name(key);
+                Some(InputEvent::KeyUp { keycode: keyval })
+            }
+            _ => None,
+        }
+    }
+
     pub fn element_name(&self) -> &str { self.element }
     pub fn is_hardware_accelerated(&self) -> bool { self.element != "avdec_h264" }
+}
+
+/// Map GStreamer button number (1-based) to MouseButton.
+fn gst_button_to_mouse_button(btn: i32) -> MouseButton {
+    match btn {
+        1 => MouseButton::Left,
+        2 => MouseButton::Middle,
+        3 => MouseButton::Right,
+        _ => MouseButton::Left,
+    }
+}
+
+/// Map GStreamer/X11 key name to a keyval.
+/// GStreamer sends X11 key names (e.g. "a", "Return", "Shift_L", "space").
+/// We pass the raw X11 keyval so the Mac side can map it.
+fn x11_keyval_from_name(name: &str) -> u32 {
+    // Common special keys — full mapping via xkbcommon if needed later
+    match name {
+        "Return" | "KP_Enter" => 0xff0d,
+        "Escape" => 0xff1b,
+        "Tab" => 0xff09,
+        "BackSpace" => 0xff08,
+        "Delete" => 0xffff,
+        "space" => 0x0020,
+        "Shift_L" => 0xffe1,
+        "Shift_R" => 0xffe2,
+        "Control_L" => 0xffe3,
+        "Control_R" => 0xffe4,
+        "Alt_L" => 0xffe9,
+        "Alt_R" => 0xffea,
+        "Super_L" => 0xffeb,
+        "Super_R" => 0xffec,
+        "Left" => 0xff51,
+        "Up" => 0xff52,
+        "Right" => 0xff53,
+        "Down" => 0xff54,
+        "Home" => 0xff50,
+        "End" => 0xff57,
+        "Page_Up" => 0xff55,
+        "Page_Down" => 0xff56,
+        "F1" => 0xffbe,
+        "F2" => 0xffbf,
+        "F3" => 0xffc0,
+        "F4" => 0xffc1,
+        "F5" => 0xffc2,
+        "F6" => 0xffc3,
+        "F7" => 0xffc4,
+        "F8" => 0xffc5,
+        "F9" => 0xffc6,
+        "F10" => 0xffc7,
+        "F11" => 0xffc8,
+        "F12" => 0xffc9,
+        "Caps_Lock" => 0xffe5,
+        _ => {
+            // For single-char keys, use the Unicode codepoint
+            let mut chars = name.chars();
+            if let Some(c) = chars.next() {
+                if chars.next().is_none() {
+                    return c as u32;
+                }
+            }
+            // Unknown — pass name hash as fallback
+            0
+        }
+    }
 }
 
 impl Drop for GStreamerDisplayDecoder {

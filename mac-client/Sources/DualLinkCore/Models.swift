@@ -145,3 +145,103 @@ public enum DualLinkError: LocalizedError, Sendable {
         }
     }
 }
+
+// MARK: - InputEvent (Sprint 2.3)
+
+/// Input event received from the Linux receiver.
+/// Coordinates are normalised [0.0, 1.0] relative to the display.
+public enum InputEvent: Codable, Sendable {
+    case mouseMove(x: Double, y: Double)
+    case mouseDown(x: Double, y: Double, button: MouseButton)
+    case mouseUp(x: Double, y: Double, button: MouseButton)
+    case mouseScroll(x: Double, y: Double, deltaX: Double, deltaY: Double)
+    case keyDown(keycode: UInt32, text: String?)
+    case keyUp(keycode: UInt32)
+
+    // Custom Codable to match Rust's adjacently-tagged serde format
+    enum CodingKeys: String, CodingKey {
+        case kind, x, y, button
+        case deltaX = "delta_x"
+        case deltaY = "delta_y"
+        case keycode, text
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let kind = try c.decode(String.self, forKey: .kind)
+        switch kind {
+        case "mouse_move":
+            self = .mouseMove(
+                x: try c.decode(Double.self, forKey: .x),
+                y: try c.decode(Double.self, forKey: .y)
+            )
+        case "mouse_down":
+            self = .mouseDown(
+                x: try c.decode(Double.self, forKey: .x),
+                y: try c.decode(Double.self, forKey: .y),
+                button: try c.decode(MouseButton.self, forKey: .button)
+            )
+        case "mouse_up":
+            self = .mouseUp(
+                x: try c.decode(Double.self, forKey: .x),
+                y: try c.decode(Double.self, forKey: .y),
+                button: try c.decode(MouseButton.self, forKey: .button)
+            )
+        case "mouse_scroll":
+            self = .mouseScroll(
+                x: try c.decode(Double.self, forKey: .x),
+                y: try c.decode(Double.self, forKey: .y),
+                deltaX: try c.decode(Double.self, forKey: .deltaX),
+                deltaY: try c.decode(Double.self, forKey: .deltaY)
+            )
+        case "key_down":
+            self = .keyDown(
+                keycode: try c.decode(UInt32.self, forKey: .keycode),
+                text: try c.decodeIfPresent(String.self, forKey: .text)
+            )
+        case "key_up":
+            self = .keyUp(keycode: try c.decode(UInt32.self, forKey: .keycode))
+        default:
+            throw DecodingError.dataCorruptedError(forKey: .kind, in: c, debugDescription: "Unknown input event kind: \(kind)")
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .mouseMove(let x, let y):
+            try c.encode("mouse_move", forKey: .kind)
+            try c.encode(x, forKey: .x)
+            try c.encode(y, forKey: .y)
+        case .mouseDown(let x, let y, let button):
+            try c.encode("mouse_down", forKey: .kind)
+            try c.encode(x, forKey: .x)
+            try c.encode(y, forKey: .y)
+            try c.encode(button, forKey: .button)
+        case .mouseUp(let x, let y, let button):
+            try c.encode("mouse_up", forKey: .kind)
+            try c.encode(x, forKey: .x)
+            try c.encode(y, forKey: .y)
+            try c.encode(button, forKey: .button)
+        case .mouseScroll(let x, let y, let dx, let dy):
+            try c.encode("mouse_scroll", forKey: .kind)
+            try c.encode(x, forKey: .x)
+            try c.encode(y, forKey: .y)
+            try c.encode(dx, forKey: .deltaX)
+            try c.encode(dy, forKey: .deltaY)
+        case .keyDown(let keycode, let text):
+            try c.encode("key_down", forKey: .kind)
+            try c.encode(keycode, forKey: .keycode)
+            try c.encodeIfPresent(text, forKey: .text)
+        case .keyUp(let keycode):
+            try c.encode("key_up", forKey: .kind)
+            try c.encode(keycode, forKey: .keycode)
+        }
+    }
+}
+
+public enum MouseButton: String, Codable, Sendable {
+    case left
+    case right
+    case middle
+}

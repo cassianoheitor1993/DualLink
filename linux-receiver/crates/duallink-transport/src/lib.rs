@@ -38,7 +38,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use duallink_core::{EncodedFrame, StreamConfig, VideoCodec};
+use duallink_core::{EncodedFrame, InputEvent, StreamConfig, VideoCodec};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, UdpSocket};
@@ -183,6 +183,7 @@ enum MessageType {
     ConfigUpdate,
     Keepalive,
     Stop,
+    InputEvent,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -201,6 +202,8 @@ struct SignalingMessage {
     reason: Option<String>,
     #[serde(rename = "timestampMs", skip_serializing_if = "Option::is_none")]
     timestamp_ms: Option<u64>,
+    #[serde(rename = "inputEvent", skip_serializing_if = "Option::is_none")]
+    input_event: Option<InputEvent>,
 }
 
 impl SignalingMessage {
@@ -213,6 +216,20 @@ impl SignalingMessage {
             accepted: Some(accepted),
             reason,
             timestamp_ms: None,
+            input_event: None,
+        }
+    }
+
+    fn input_event(event: InputEvent) -> Self {
+        Self {
+            msg_type: MessageType::InputEvent,
+            session_id: None,
+            device_name: None,
+            config: None,
+            accepted: None,
+            reason: None,
+            timestamp_ms: None,
+            input_event: Some(event),
         }
     }
 }
@@ -246,19 +263,44 @@ pub enum SignalingEvent {
 /// }
 /// # })
 /// ```
+/// Sender handle for pushing input events to the connected Mac client.
+///
+/// Uses the same TCP signaling connection (Linux → Mac direction).
+/// Clone-able and Send — pass to the decode thread.
+#[derive(Clone)]
+pub struct InputSender {
+    tx: mpsc::Sender<InputEvent>,
+}
+
+impl InputSender {
+    /// Send an input event to the Mac client.
+    /// Non-blocking — returns Err only if the channel is full/closed.
+    pub async fn send(&self, event: InputEvent) -> Result<(), mpsc::error::SendError<InputEvent>> {
+        self.tx.send(event).await
+    }
+
+    /// Try send without awaiting (for use in blocking contexts).
+    pub fn try_send(&self, event: InputEvent) -> Result<(), mpsc::error::TrySendError<InputEvent>> {
+        self.tx.try_send(event)
+    }
+}
+
 pub struct DualLinkReceiver {
     pub frames_received: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl DualLinkReceiver {
     /// Bind UDP:7878 + TCP:7879 and start background Tokio tasks.
+    /// Returns an `InputSender` in addition to the frame/event channels.
     pub async fn start() -> anyhow::Result<(
         Self,
         mpsc::Receiver<EncodedFrame>,
         mpsc::Receiver<SignalingEvent>,
+        InputSender,
     )> {
         let (frame_tx, frame_rx) = mpsc::channel::<EncodedFrame>(64);
         let (event_tx, event_rx) = mpsc::channel::<SignalingEvent>(16);
+        let (input_tx, input_rx) = mpsc::channel::<InputEvent>(256);
         let counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
         // UDP receiver task
@@ -270,9 +312,9 @@ impl DualLinkReceiver {
         // TCP signaling task
         let tcp = TcpListener::bind(format!("0.0.0.0:{SIGNALING_PORT}")).await?;
         info!("TCP signaling listener bound on 0.0.0.0:{SIGNALING_PORT}");
-        tokio::spawn(async move { run_signaling_server(tcp, event_tx).await });
+        tokio::spawn(async move { run_signaling_server(tcp, event_tx, input_rx).await });
 
-        Ok((Self { frames_received: counter }, frame_rx, event_rx))
+        Ok((Self { frames_received: counter }, frame_rx, event_rx, InputSender { tx: input_tx }))
     }
 }
 
@@ -309,13 +351,21 @@ async fn run_udp_receiver(
 
 // ── TCP signaling task ─────────────────────────────────────────────────────────
 
-async fn run_signaling_server(listener: TcpListener, event_tx: mpsc::Sender<SignalingEvent>) {
+async fn run_signaling_server(
+    listener: TcpListener,
+    event_tx: mpsc::Sender<SignalingEvent>,
+    input_rx: mpsc::Receiver<InputEvent>,
+) {
+    // We only support one client at a time — the input_rx is moved into the
+    // first accepted connection's write task.
+    let input_rx = Arc::new(tokio::sync::Mutex::new(input_rx));
     loop {
         match listener.accept().await {
             Ok((stream, addr)) => {
                 info!("Signaling connection from {}", addr);
                 let tx = event_tx.clone();
-                tokio::spawn(async move { handle_signaling_conn(stream, addr, tx).await });
+                let irx = Arc::clone(&input_rx);
+                tokio::spawn(async move { handle_signaling_conn(stream, addr, tx, irx).await });
             }
             Err(e) => { warn!("TCP accept error: {}", e); }
         }
@@ -323,24 +373,32 @@ async fn run_signaling_server(listener: TcpListener, event_tx: mpsc::Sender<Sign
 }
 
 async fn handle_signaling_conn(
-    mut stream: tokio::net::TcpStream,
+    stream: tokio::net::TcpStream,
     addr: SocketAddr,
     event_tx: mpsc::Sender<SignalingEvent>,
+    input_rx: Arc<tokio::sync::Mutex<mpsc::Receiver<InputEvent>>>,
 ) {
+    let (reader, writer) = tokio::io::split(stream);
+    let writer = Arc::new(tokio::sync::Mutex::new(writer));
+
+    // ── Reader: process incoming signaling messages ────────────────────────
+    let writer_for_reader = Arc::clone(&writer);
+    let mut reader = reader;
     let mut body_buf = Vec::new();
+    let mut session_active = false;
+
     loop {
-        // Read 4-byte length prefix
         let mut len_bytes = [0u8; 4];
-        if stream.read_exact(&mut len_bytes).await.is_err() {
+        if reader.read_exact(&mut len_bytes).await.is_err() {
             let _ = event_tx.send(SignalingEvent::ClientDisconnected).await;
-            return;
+            break;
         }
         let msg_len = u32::from_be_bytes(len_bytes) as usize;
 
         body_buf.resize(msg_len, 0);
-        if stream.read_exact(&mut body_buf).await.is_err() {
+        if reader.read_exact(&mut body_buf).await.is_err() {
             let _ = event_tx.send(SignalingEvent::ClientDisconnected).await;
-            return;
+            break;
         }
 
         let msg: SignalingMessage = match serde_json::from_slice(&body_buf) {
@@ -357,11 +415,35 @@ async fn handle_signaling_conn(
 
                 // Respond with hello_ack
                 let ack = SignalingMessage::hello_ack(session_id.clone(), true, None);
-                if send_msg(&mut stream, &ack).await.is_err() { return; }
+                {
+                    let mut w = writer_for_reader.lock().await;
+                    if send_msg_split(&mut *w, &ack).await.is_err() { break; }
+                }
 
                 let _ = event_tx.send(SignalingEvent::SessionStarted {
                     session_id, device_name, config, client_addr: addr,
                 }).await;
+
+                // Start forwarding input events now that session is active
+                if !session_active {
+                    session_active = true;
+                    let w = Arc::clone(&writer);
+                    let irx = Arc::clone(&input_rx);
+                    tokio::spawn(async move {
+                        let mut input_rx = irx.lock().await;
+                        let mut events_sent: u64 = 0;
+                        while let Some(event) = input_rx.recv().await {
+                            let msg = SignalingMessage::input_event(event);
+                            let mut w = w.lock().await;
+                            if send_msg_split(&mut *w, &msg).await.is_err() { break; }
+                            events_sent += 1;
+                            if events_sent == 1 {
+                                info!("First input event sent to Mac client");
+                            }
+                        }
+                        debug!("Input writer task exiting (sent {} events)", events_sent);
+                    });
+                }
             }
             MessageType::ConfigUpdate => {
                 if let Some(config) = msg.config {
@@ -375,17 +457,17 @@ async fn handle_signaling_conn(
                 let session_id = msg.session_id.unwrap_or_default();
                 info!("Stop from {} session={}", addr, session_id);
                 let _ = event_tx.send(SignalingEvent::SessionStopped { session_id }).await;
-                return;
+                break;
             }
-            MessageType::HelloAck => { /* receiver never sends acks */ }
+            MessageType::HelloAck | MessageType::InputEvent => { /* not expected from client */ }
         }
     }
 }
 
-async fn send_msg(stream: &mut tokio::net::TcpStream, msg: &SignalingMessage) -> std::io::Result<()> {
+async fn send_msg_split<W: AsyncWriteExt + Unpin>(writer: &mut W, msg: &SignalingMessage) -> std::io::Result<()> {
     let json = serde_json::to_vec(msg)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-    stream.write_all(&(json.len() as u32).to_be_bytes()).await?;
-    stream.write_all(&json).await?;
-    stream.flush().await
+    writer.write_all(&(json.len() as u32).to_be_bytes()).await?;
+    writer.write_all(&json).await?;
+    writer.flush().await
 }

@@ -27,6 +27,7 @@ public struct SignalingMessage: Codable, Sendable {
         case configUpdate   = "config_update"
         case keepalive
         case stop
+        case inputEvent     = "input_event"
     }
 
     public let type: MessageType
@@ -36,6 +37,7 @@ public struct SignalingMessage: Codable, Sendable {
     public let accepted: Bool?
     public let reason: String?
     public let timestampMs: UInt64?
+    public let inputEvent: InputEvent?
 
     // MARK: Factories
 
@@ -47,7 +49,8 @@ public struct SignalingMessage: Codable, Sendable {
             config: config,
             accepted: nil,
             reason: nil,
-            timestampMs: nil
+            timestampMs: nil,
+            inputEvent: nil
         )
     }
 
@@ -59,7 +62,8 @@ public struct SignalingMessage: Codable, Sendable {
             config: config,
             accepted: nil,
             reason: nil,
-            timestampMs: nil
+            timestampMs: nil,
+            inputEvent: nil
         )
     }
 
@@ -71,7 +75,8 @@ public struct SignalingMessage: Codable, Sendable {
             config: nil,
             accepted: nil,
             reason: nil,
-            timestampMs: timestampMs
+            timestampMs: timestampMs,
+            inputEvent: nil
         )
     }
 
@@ -83,7 +88,8 @@ public struct SignalingMessage: Codable, Sendable {
             config: nil,
             accepted: nil,
             reason: nil,
-            timestampMs: nil
+            timestampMs: nil,
+            inputEvent: nil
         )
     }
 }
@@ -124,6 +130,9 @@ public actor SignalingClient {
     /// Called when any message is received from the receiver.
     public var onMessage: (@Sendable (SignalingMessage) -> Void)?
 
+    /// Called when an input event is received from the Linux receiver.
+    public var onInputEvent: (@Sendable (InputEvent) -> Void)?
+
     // MARK: - Private
 
     private var connection: NWConnection?
@@ -142,11 +151,13 @@ public actor SignalingClient {
     public func configure(
         onStateChange: (@Sendable (SignalingClientState) -> Void)? = nil,
         onHelloAck: (@Sendable (Bool, String?) -> Void)? = nil,
-        onMessage: (@Sendable (SignalingMessage) -> Void)? = nil
+        onMessage: (@Sendable (SignalingMessage) -> Void)? = nil,
+        onInputEvent: (@Sendable (InputEvent) -> Void)? = nil
     ) {
         self.onStateChange = onStateChange
         self.onHelloAck = onHelloAck
         self.onMessage = onMessage
+        self.onInputEvent = onInputEvent
     }
 
     // MARK: - Connect
@@ -305,6 +316,10 @@ public actor SignalingClient {
                 setState(.failed(message.reason ?? "Receiver rejected connection"))
             }
             onHelloAck?(message.accepted ?? false, message.reason)
+        case .inputEvent:
+            if let event = message.inputEvent {
+                onInputEvent?(event)
+            }
         default:
             break
         }

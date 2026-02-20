@@ -5,6 +5,7 @@ import ScreenCapture
 import VideoEncoder
 import Streaming
 import Signaling
+import InputInjection
 
 @main
 struct DualLinkApp: App {
@@ -43,6 +44,7 @@ final class AppState: ObservableObject {
     let videoEncoder          = VideoEncoder()
     let videoSender           = VideoSender()
     let signalingClient       = SignalingClient()
+    let inputInjector         = InputInjectionManager()
 
     // MARK: - Private
 
@@ -66,21 +68,24 @@ final class AppState: ObservableObject {
                 peer: PeerInfo(id: sessionID, name: host, address: host, port: 7879),
                 attempt: 1
             )
-            await signalingClient.configure(onStateChange: { [weak self] state in
-                guard let self else { return }
-                if case .failed(let reason) = state {
-                    Task { @MainActor in
-                        // Only react to drops while actively streaming.
-                        // During setup, the real error is already in lastError
-                        // and teardown() is already being called from the catch block.
-                        guard !self.isTearingDown,
-                              case .streaming = self.connectionState else { return }
-                        self.lastError = "Signaling lost: \(reason)"
-                        await self.teardown()
-                        self.connectionState = .error(reason: reason)
+            await signalingClient.configure(
+                onStateChange: { [weak self] state in
+                    guard let self else { return }
+                    if case .failed(let reason) = state {
+                        Task { @MainActor in
+                            guard !self.isTearingDown,
+                                  case .streaming = self.connectionState else { return }
+                            self.lastError = "Signaling lost: \(reason)"
+                            await self.teardown()
+                            self.connectionState = .error(reason: reason)
+                        }
                     }
+                },
+                onInputEvent: { [weak self] event in
+                    guard let self else { return }
+                    self.inputInjector.inject(event: event)
                 }
-            })
+            )
             try await signalingClient.connect(host: host)
 
             // ── 2. Create Virtual Display ────────────────────────────────────
@@ -88,9 +93,10 @@ final class AppState: ObservableObject {
                 resolution: config.resolution,
                 refreshRate: config.targetFPS
             )
-            guard virtualDisplayManager.activeDisplayID != nil else {
+            guard let virtualDisplayID = virtualDisplayManager.activeDisplayID else {
                 throw DualLinkError.streamError("Virtual display ID unavailable")
             }
+            inputInjector.configure(displayID: virtualDisplayID)
 
             // ── 3. Configure Video Encoder ─────────────────────────────────
             try videoEncoder.configure(config: config)

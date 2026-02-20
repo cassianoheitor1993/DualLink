@@ -113,24 +113,52 @@
 - **Approach:** GStreamer `autovideosink` integrated into decode pipeline (zero extra CPU copies)
 - **Implementation:**
   - `GStreamerDisplayDecoder` in `duallink-decoder` — combined decode+display pipeline:
-    `appsrc → h264parse → vaapih264dec → autovideosink sync=false`
+    `appsrc → h264parse → vaapih264dec → vaapipostproc → autovideosink sync=false`
+  - VA-API surface alignment fix: `vaapipostproc` handles GPU surface height padding (e.g. 1088→1080)
+    without CPU-side `videoconvert` failures
   - `DecoderFactory::best_available_with_display()` factory method
   - `push_frame()` — push encoded data, GStreamer handles decode AND display
   - GStreamer creates native X11/Wayland window via `autovideosink`
-  - Dedicated `spawn_blocking` thread serialises GStreamer access  
+  - Dedicated `spawn_blocking` thread serialises GStreamer access
+  - Cursor now visible in capture (`showsCursor = true`)
 - **Architecture decision:** Using a single GStreamer pipeline (decode→display) instead of
   a separate `Renderer` pulling `DecodedFrame`. This avoids 2 unnecessary CPU copies per frame
   and leverages GStreamer's native windowing. The `Renderer` trait is preserved for future
   use cases (overlays, wgpu-based compositing).
-- **Status:** Compiled and ready for testing
+- **Status:** ✅ Validated — fullscreen rendering on X11 with VA-API hardware decode
 
-### Sprint 2.2 — 60fps Upgrade (Next)
+### Sprint 2.2 — 60fps Upgrade ✅
 - **Goal:** Increase capture/encode/decode pipeline to 60fps sustained
-- **Tasks:** Adaptive bitrate, frame pacing, vsync
+- **Implementation:**
+  - Added 60fps toggle in ContentView (ConnectView → ControlsView)
+  - `StreamConfig.highPerformance` preset: 1920×1080 @ 60fps, 15Mbps
+  - No Linux-side changes needed — GStreamer pipeline handles variable framerate natively
+- **Status:** ✅ Validated — 60fps streaming over Wi-Fi (some latency expected, USB mode in Phase 3)
 
-### Sprint 2.3 — Input Forwarding
-- **Goal:** Capture mouse/keyboard on Linux, inject on macOS
-- **Tasks:** evdev capture, WebRTC DataChannel, CGEvent injection
+### Sprint 2.3 — Input Forwarding ✅
+- **Goal:** Capture mouse/keyboard on Linux GStreamer window, forward to macOS for injection
+- **Architecture:** GStreamer bus navigation events → InputSender (mpsc) → TCP signaling → Mac CGEvent
+- **Implementation (Linux):**
+  - `duallink-core/src/input.rs` — `InputEvent` enum (MouseMove, MouseDown, MouseUp, MouseScroll,
+    KeyDown, KeyUp) with `#[serde(tag = "kind")]` for cross-platform JSON serialisation
+  - `GStreamerDisplayDecoder::poll_input_events()` — drains GStreamer bus for navigation messages
+  - `parse_navigation_event()` — converts GstNavigationMessage to `InputEvent` with normalised [0,1] coordinates
+  - `x11_keyval_from_name()` — maps X11 key names to keyvals (common keys + Unicode fallback)
+  - `InputSender` struct in transport crate — wraps `mpsc::Sender<InputEvent>` with `try_send()`
+  - `SignalingMessage::InputEvent` message type added to TCP protocol
+  - Signaling connection refactored: TCP stream split into reader/writer with `Arc<Mutex<WriteHalf>>`
+  - Input writer task spawned after hello handshake — forwards queued events as JSON
+- **Implementation (macOS):**
+  - `InputEvent` + `MouseButton` added to `DualLinkCore/Models.swift` with custom `Codable`
+    matching Rust's `#[serde(tag = "kind")]` format
+  - `SignalingClient` updated: `onInputEvent` callback, `input_event` message handling
+  - `InputInjectionManager` in `InputInjection/` module:
+    - CGEvent injection: mouse move, click, scroll, key press/release
+    - Normalised coordinate → absolute display coordinate mapping
+    - X11 keyval → macOS virtual keycode translation table
+    - Targets virtual display via `CGDirectDisplayID`
+  - Wired in `DualLinkApp.swift`: `inputInjector.configure(displayID:)` + `onInputEvent` callback
+- **Status:** ✅ Code complete — ready for integration testing
 
 ---
 
@@ -150,4 +178,4 @@
 
 ---
 
-*Last updated: 2026-02-20*
+*Last updated: 2026-02-21*

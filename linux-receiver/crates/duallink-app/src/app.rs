@@ -8,16 +8,17 @@ use duallink_transport::{DualLinkReceiver, SignalingEvent};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
-/// Main receiver loop — Sprint 2.1 (display mode)
+/// Main receiver loop — Sprint 2.3 (display + input forwarding)
 ///
 /// 1. Bind UDP:7878 (video) + TCP:7879 (signaling)
 /// 2. Wait for hello handshake → get StreamConfig
 /// 3. Initialise GStreamer display decoder (vaapih264dec → autovideosink)
 /// 4. Receive → decode → display (single pipeline)
+/// 5. Capture mouse/keyboard from GStreamer window → forward to Mac via TCP
 pub async fn run() -> Result<()> {
     info!("Binding transport (UDP:7878 video, TCP:7879 signaling)...");
 
-    let (_recv, mut frame_rx, mut event_rx) = DualLinkReceiver::start().await?;
+    let (_recv, mut frame_rx, mut event_rx, input_sender) = DualLinkReceiver::start().await?;
 
     info!("Waiting for macOS DualLink client to connect...");
     info!("Enter the IP of this machine in the DualLink mac app and press Start Mirroring.");
@@ -57,7 +58,7 @@ pub async fn run() -> Result<()> {
     let elem = display_decoder.element_name().to_string();
     info!("Display decoder ready: {} hw={} — video window should appear", elem, hw);
 
-    // ── Dedicated decode+display thread (GStreamer is blocking) ─────────────
+    // ── Dedicated decode+display+input thread (GStreamer is blocking) ──────
     let (decode_tx, mut decode_rx) = mpsc::channel::<EncodedFrame>(64);
     let push_errors = Arc::new(AtomicU64::new(0));
     let pe = Arc::clone(&push_errors);
@@ -81,6 +82,13 @@ pub async fn run() -> Result<()> {
                     if errs <= 10 || errs % 100 == 0 {
                         warn!("Display push error #{} ({} bytes, keyframe={}): {}", errs, sz, kf, e);
                     }
+                }
+            }
+
+            // Poll and forward input events from the GStreamer window
+            for event in display_decoder.poll_input_events() {
+                if let Err(_) = input_sender.try_send(event) {
+                    // Channel full or closed — drop event silently
                 }
             }
         }

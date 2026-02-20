@@ -248,6 +248,35 @@
   ```
 - **Status:** ✅ Complete
 
+### Sprint 4.3 — egui Control Panel GUI ✅
+- **Goal:** Native Linux GUI app launchable from the app menu, replacing terminal-only UX
+- **Crate:** `linux-receiver/crates/duallink-gui/` — eframe 0.29 / egui 0.29
+- **Architecture:**
+  - Main thread: `eframe::run_native()` renders egui window
+  - Background OS thread: dedicated tokio multi-thread runtime runs the full receiver lifecycle
+  - Shared state: `Arc<Mutex<GuiState>>` — receiver writes, egui reads via snapshot
+- **UI features:**
+  - Status badge with colour (grey/yellow/blue/green/red) and phase label
+  - Large monospace pairing PIN with one-click copy button (flashes "Copied!")
+  - Collapsible TLS certificate fingerprint section (TOFU reference)
+  - Streaming stats chips: FPS, decoded frames, received frames, Mbit/s (1-second rolling window)
+  - Log panel with auto-scroll toggle, colour-coded ERROR/WARN/info lines
+  - Quit button
+  - Custom dark theme (card-based layout, accent blue `#6390FF`)
+- **Receiver lifecycle (in GUI):**
+  - USB Ethernet auto-detection at startup
+  - Auto-stops `duallink-receiver.service` if it holds the ports (no manual step needed)
+  - Session reconnect loop — PIN stays valid across client disconnects
+  - Actionable error messages if ports still conflict after service stop
+- **Desktop integration:**
+  - `infra/linux/duallink-receiver.desktop` — `Exec=duallink-gui`, `Terminal=false`
+  - `infra/linux/duallink-receiver.svg` — custom dark-themed SVG icon
+  - `install.sh` installs both `duallink-receiver` + `duallink-gui` to `/usr/local/bin/`
+    and registers the `.desktop` + icon in `~/.local/share/`
+- **transport changes:** `StartupInfo { pairing_pin, tls_fingerprint }` added as 5th return
+  value from `DualLinkReceiver::start()` for GUI consumption
+- **Status:** ✅ Complete — validated 2026-02-20; app appears in GNOME app launcher
+
 ---
 
 ## Hardware Tested
@@ -266,4 +295,4 @@
 
 ---
 
-*Last updated: 2026-02-21*
+*Last updated: 2026-02-20 — Sprint 4.3 (GUI) complete*

@@ -5,6 +5,7 @@ import ScreenCapture
 
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
+    @State private var receiverHost: String = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -12,10 +13,33 @@ struct ContentView: View {
             Divider()
             StatusView()
             Divider()
-            ControlsView()
+            if !appState.connectionState.isActive {
+                ConnectView(receiverHost: $receiverHost)
+                Divider()
+            }
+            ControlsView(receiverHost: receiverHost)
         }
         .frame(width: 380)
         .background(.ultraThinMaterial)
+    }
+}
+
+// MARK: - ConnectView
+
+private struct ConnectView: View {
+    @Binding var receiverHost: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Linux Receiver IP")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            TextField("192.168.1.x", text: $receiverHost)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.body, design: .monospaced))
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 10)
     }
 }
 
@@ -93,6 +117,7 @@ private struct StatusView: View {
                 StreamingStatusRow(label: "Connected to", value: session.peer.name)
                 StreamingStatusRow(label: "Resolution", value: "\(session.config.resolution.width)×\(session.config.resolution.height)")
                 StreamingStatusRow(label: "FPS", value: String(format: "%.0f", appState.streamFPS))
+                StreamingStatusRow(label: "Frames sent", value: "\(appState.framesSent)")
                 StreamingStatusRow(label: "Bitrate", value: "\(session.config.maxBitrateBps / 1_000_000) Mbps")
                 StreamingStatusRow(label: "Transport", value: session.connectionMode.rawValue.uppercased())
             } else if let error = appState.lastError {
@@ -137,6 +162,7 @@ private struct StreamingStatusRow: View {
 
 private struct ControlsView: View {
     @EnvironmentObject var appState: AppState
+    let receiverHost: String
 
     var body: some View {
         HStack(spacing: 8) {
@@ -151,13 +177,14 @@ private struct ControlsView: View {
                 .tint(.red)
             } else {
                 Button {
-                    // TODO: Fase 1 — iniciar discovery e conexão
+                    guard !receiverHost.isEmpty else { return }
+                    Task { await appState.connectAndStream(to: receiverHost) }
                 } label: {
                     Label("Start Mirroring", systemImage: "play.fill")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(appState.connectionState == .discovering)
+                .disabled(receiverHost.isEmpty || appState.connectionState == .discovering)
             }
 
             Menu {

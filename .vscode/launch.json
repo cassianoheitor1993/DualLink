@@ -39,6 +39,26 @@
             "target": "PoCScreenCapture",
             "configuration": "release",
             "preLaunchTask": "swift: Build Release PoCScreenCapture (poc/poc-screen-capture)"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:screen-mirroring-app}/mac-client",
+            "name": "Debug DualLink (mac-client)",
+            "target": "DualLink",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug DualLink (mac-client)"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:screen-mirroring-app}/mac-client",
+            "name": "Release DualLink (mac-client)",
+            "target": "DualLink",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release DualLink (mac-client)"
         }
     ]
 }

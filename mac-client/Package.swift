@@ -22,6 +22,9 @@ let package = Package(
                 "VirtualDisplay",
                 "ScreenCapture",
                 "VideoEncoder",
+                "Streaming",
+                "Signaling",
+                "Discovery",
             ],
             path: "Sources/DualLinkApp",
             resources: [
@@ -65,14 +68,14 @@ let package = Package(
             path: "Sources/VideoEncoder"
         ),
 
-        // MARK: — Streaming (WebRTC) — placeholder para Fase 1
+        // MARK: — Streaming (UDP VideoSender — Sprint 1.1)
         .target(
             name: "Streaming",
             dependencies: ["DualLinkCore"],
             path: "Sources/Streaming"
         ),
 
-        // MARK: — Signaling (WebSocket) — placeholder para Fase 1
+        // MARK: — Signaling (TCP control channel — Sprint 1.1)
         .target(
             name: "Signaling",
             dependencies: ["DualLinkCore"],

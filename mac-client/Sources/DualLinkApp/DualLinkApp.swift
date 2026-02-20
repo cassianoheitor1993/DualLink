@@ -2,6 +2,9 @@ import SwiftUI
 import DualLinkCore
 import VirtualDisplay
 import ScreenCapture
+import VideoEncoder
+import Streaming
+import Signaling
 
 @main
 struct DualLinkApp: App {
@@ -27,43 +30,142 @@ struct DualLinkApp: App {
 final class AppState: ObservableObject {
     @Published var connectionState: ConnectionState = .idle
     @Published var streamFPS: Double = 0
+    @Published var framesSent: UInt64 = 0
     @Published var lastError: String?
 
+    // MARK: - Managers
+
     let virtualDisplayManager = VirtualDisplayManager()
-    let screenCaptureManager = ScreenCaptureManager()
+    let screenCaptureManager  = ScreenCaptureManager()
+    let videoEncoder          = VideoEncoder()
+    let videoSender           = VideoSender()
+    let signalingClient       = SignalingClient()
 
-    /// Inicia o pipeline completo: display virtual → captura → encoding → streaming
-    func startStreaming(to peer: PeerInfo, config: StreamConfig) async {
+    // MARK: - Private
+
+    private var fpsCounter = FPSCounter()
+    private var sessionID: String = ""
+
+    // MARK: - Connect & Stream
+
+    /// Full pipeline: virtual display → capture → encode → UDP send.
+    /// - Parameters:
+    ///   - host: IP address of the Linux receiver.
+    ///   - config: Stream parameters.
+    func connectAndStream(to host: String, config: StreamConfig = .default) async {
+        guard case .idle = connectionState else { return }
+        lastError = nil
+        sessionID = UUID().uuidString
+
         do {
-            // 1. Criar display virtual
-            try await virtualDisplayManager.create(resolution: config.resolution, refreshRate: config.targetFPS)
+            // ── 1. Connect Signaling (TCP) ─────────────────────────────────────
+            connectionState = .connecting(
+                peer: PeerInfo(id: sessionID, name: host, address: host, port: 7879),
+                attempt: 1
+            )
+            await signalingClient.configure(onStateChange: { [weak self] state in
+                guard let self else { return }
+                if case .failed(let reason) = state {
+                    Task { @MainActor in
+                        self.lastError = "Signaling lost: \(reason)"
+                        await self.teardown()
+                        self.connectionState = .error(reason: reason)
+                    }
+                }
+            })
+            try await signalingClient.connect(host: host)
 
+            // ── 2. Create Virtual Display ────────────────────────────────────
+            try await virtualDisplayManager.create(
+                resolution: config.resolution,
+                refreshRate: config.targetFPS
+            )
             guard let displayID = virtualDisplayManager.activeDisplayID else {
-                throw DualLinkError.streamError("Virtual display ID unavailable after creation")
+                throw DualLinkError.streamError("Virtual display ID unavailable")
             }
 
-            // 2. Iniciar captura do display virtual
-            try await screenCaptureManager.startCapture(displayID: displayID, config: config) { frame in
-                // TODO: Fase 1 — encodar e enviar via WebRTC
-                _ = frame
+            // ── 3. Configure Video Encoder ─────────────────────────────────
+            try videoEncoder.configure(config: config)
+
+            // ── 4. Connect Video Sender (UDP) ─────────────────────────────
+            try await videoSender.connect(host: host)
+
+            // ── 5. Wire Encoder → Sender ────────────────────────────────────
+            videoEncoder.onEncodedData = { [weak self] nalData, pts, isKeyframe in
+                guard let self else { return }
+                Task {
+                    await self.videoSender.send(
+                        nalData: nalData,
+                        presentationTime: pts,
+                        isKeyframe: isKeyframe
+                    )
+                    let sent = await self.videoSender.framesSent
+                    await MainActor.run {
+                        self.framesSent = sent
+                        self.streamFPS = self.fpsCounter.tick()
+                    }
+                }
             }
 
+            // ── 6. Start Screen Capture ───────────────────────────────────
+            try await screenCaptureManager.startCapture(displayID: displayID, config: config) { [weak self] frame in
+                guard let self else { return }
+                self.videoEncoder.encode(
+                    pixelBuffer: frame.pixelBuffer,
+                    presentationTime: frame.presentationTime
+                )
+            }
+
+            // ── 7. Send Hello handshake ──────────────────────────────────
+            try await signalingClient.sendHello(sessionID: sessionID, config: config)
+
+            // ── 8. Update UI state ─────────────────────────────────────────
             connectionState = .streaming(session: SessionInfo(
-                sessionID: UUID().uuidString,
-                peer: peer,
+                sessionID: sessionID,
+                peer: PeerInfo(id: sessionID, name: host, address: host, port: 7878),
                 config: config,
                 connectionMode: .wifi
             ))
+
         } catch {
             lastError = error.localizedDescription
             connectionState = .error(reason: error.localizedDescription)
+            await teardown()
         }
     }
 
-    /// Para o streaming e destrói o display virtual.
+    // MARK: - Stop
+
     func stopStreaming() async {
+        try? await signalingClient.sendStop(sessionID: sessionID)
+        await teardown()
+    }
+
+    // MARK: - Private
+
+    private func teardown() async {
         try? await screenCaptureManager.stopCapture()
+        videoEncoder.onEncodedData = nil
+        videoEncoder.invalidate()
+        await videoSender.disconnect()
+        await signalingClient.disconnect()
         await virtualDisplayManager.destroy()
         connectionState = .idle
+        streamFPS = 0
+        framesSent = 0
+    }
+}
+
+// MARK: - FPSCounter
+
+/// Lightweight rolling FPS counter.
+private struct FPSCounter {
+    private var timestamps: [Date] = []
+
+    mutating func tick() -> Double {
+        let now = Date()
+        timestamps.append(now)
+        timestamps = timestamps.filter { now.timeIntervalSince($0) < 1.0 }
+        return Double(timestamps.count)
     }
 }

@@ -1,42 +1,102 @@
 use anyhow::Result;
-use duallink_core::{ConnectionState, StreamConfig};
-use duallink_discovery::DiscoveryService;
+use duallink_core::StreamConfig;
+use duallink_decoder::DecoderFactory;
+use duallink_transport::{DualLinkReceiver, SignalingEvent};
 use tracing::{info, warn};
 
-/// Loop principal do receiver.
+/// Main receiver loop — Sprint 1.4
 ///
-/// Sequência:
-/// 1. Iniciar discovery mDNS
-/// 2. Aguardar peer (macOS sender)
-/// 3. Estabelecer sessão WebRTC
-/// 4. Inicializar decoder (NVDEC/VAAPI)
-/// 5. Inicializar renderer fullscreen
-/// 6. Loop: receber frame → decodificar → renderizar
+/// 1. Bind UDP:7878 (video) + TCP:7879 (signaling)
+/// 2. Wait for hello handshake → get StreamConfig
+/// 3. Initialise GStreamer decoder (vaapih264dec → nvh264dec → avdec_h264)
+/// 4. Receive → decode → (renderer Sprint 2)
 pub async fn run() -> Result<()> {
-    let config = StreamConfig::default();
-    info!("Config: {:?}", config);
+    info!("Binding transport (UDP:7878 video, TCP:7879 signaling)...");
 
-    // Fase 1 — discovery
-    let mut discovery = DiscoveryService::new();
-    let mut peer_rx = discovery.start_browsing()
-        .map_err(|e| anyhow::anyhow!("Discovery failed: {}", e))?;
+    let (_recv, mut frame_rx, mut event_rx) = DualLinkReceiver::start().await?;
 
-    info!("Searching for DualLink sender on local network...");
-    info!("Make sure the macOS DualLink app is running.");
+    info!("Waiting for macOS DualLink client to connect...");
+    info!("Enter the IP of this machine in the DualLink mac app and press Start Mirroring.");
 
-    // Aguardar primeiro peer
-    let Some(peer) = peer_rx.recv().await else {
-        warn!("Discovery ended without finding a peer.");
-        return Ok(());
+    // ── Wait for hello to get the session config ───────────────────────────
+    let config = loop {
+        match event_rx.recv().await {
+            Some(SignalingEvent::SessionStarted { session_id, device_name, config, client_addr }) => {
+                info!(
+                    "Session started: id={} from='{}' addr={} config={:?}",
+                    session_id, device_name, client_addr, config
+                );
+                break config;
+            }
+            Some(SignalingEvent::ClientDisconnected) => {
+                warn!("Client disconnected before hello — waiting again");
+            }
+            Some(other) => {
+                info!("Signaling event (pre-session): {:?}", other);
+            }
+            None => {
+                anyhow::bail!("Signaling channel closed before session started");
+            }
+        }
     };
 
-    info!("Found peer: {} at {}", peer.name, peer.socket_addr());
+    // ── Initialise decoder ─────────────────────────────────────────────────
+    let width  = config.resolution.width;
+    let height = config.resolution.height;
 
-    // TODO: Sprint 1.2.2 — conectar via WebRTC signaling
-    // TODO: Sprint 1.2.3 — inicializar decoder
-    // TODO: Sprint 1.2.4 — inicializar renderer
-    // TODO: Sprint 1.2.7 — loop principal receive → decode → render
+    let decoder = tokio::task::spawn_blocking(move || {
+        DecoderFactory::best_available(width, height)
+    }).await?
+    .map_err(|e| anyhow::anyhow!("Decoder init failed: {}", e))?;
 
-    discovery.stop();
+    info!("Decoder ready: {} hw={}", decoder.element_name(), decoder.is_hardware_accelerated());
+
+    // Wrap in Arc for sharing between blocking task and event handler
+    let decoder = std::sync::Arc::new(decoder);
+
+    // ── Main receive → decode loop ─────────────────────────────────────────
+    info!("Streaming — receiving frames...");
+    loop {
+        tokio::select! {
+            // Incoming encoded frame
+            Some(frame) = frame_rx.recv() => {
+                let dec = std::sync::Arc::clone(&decoder);
+                tokio::task::spawn_blocking(move || {
+                    match dec.decode_frame(frame) {
+                        Ok(decoded) => {
+                            // TODO: Sprint 2 — pass decoded frame to renderer
+                            let _ = decoded;
+                        }
+                        Err(e) => {
+                            warn!("Decode error: {}", e);
+                        }
+                    }
+                });
+            }
+
+            // Signaling events mid-session
+            Some(event) = event_rx.recv() => {
+                match event {
+                    SignalingEvent::SessionStopped { session_id } => {
+                        info!("Session {} stopped by sender — exiting", session_id);
+                        break;
+                    }
+                    SignalingEvent::ClientDisconnected => {
+                        warn!("Sender disconnected — exiting");
+                        break;
+                    }
+                    SignalingEvent::ConfigUpdated { config } => {
+                        info!("Config update received: {:?}", config);
+                        // TODO: Sprint 2 — reinitialise decoder/renderer on config change
+                    }
+                    _ => {}
+                }
+            }
+
+            else => break,
+        }
+    }
+
+    info!("Receiver exited cleanly.");
     Ok(())
 }

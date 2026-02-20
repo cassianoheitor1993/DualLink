@@ -17,6 +17,9 @@ duallink-webrtc = { path = "../duallink-webrtc" }
 duallink-signaling = { path = "../duallink-signaling" }
 duallink-discovery = { path = "../duallink-discovery" }
 duallink-input = { path = "../duallink-input" }
+tokio.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
 
 tokio.workspace = true
 tracing.workspace = true

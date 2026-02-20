@@ -1,6 +1,6 @@
 [package]
 name = "duallink-decoder"
-description = "H.264/H.265 hardware video decoding via GStreamer (VAAPI/NVDEC)"
+description = "H.264/H.265 hardware video decoding via GStreamer (VAAPI/NVDEC) — Sprint 1.4"
 version.workspace = true
 edition.workspace = true
 
@@ -10,9 +10,9 @@ tokio.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 bytes.workspace = true
-async-trait.workspace = true
+anyhow.workspace = true
 
-# GStreamer — adicionar quando iniciar Sprint 0.3 / Fase 1
-# gstreamer = "0.22"
-# gstreamer-video = "0.22"
-# gstreamer-app = "0.22"
+# GStreamer Rust bindings (requires GStreamer ≥ 1.22 + libgstreamer-dev installed)
+gstreamer = "0.22"
+gstreamer-app = "0.22"
+gstreamer-video = "0.22"

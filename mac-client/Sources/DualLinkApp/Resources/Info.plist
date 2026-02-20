@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.duallink.mac-client</string>
+
+    <key>CFBundleName</key>
+    <string>DualLink</string>
+
+    <key>CFBundleDisplayName</key>
+    <string>DualLink</string>
+
+    <key>CFBundleVersion</key>
+    <string>1</string>
+
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+
+    <key>CFBundleExecutable</key>
+    <string>DualLink</string>
+
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+
+    <!-- Screen Recording — required for ScreenCaptureKit -->
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>DualLink needs screen recording access to capture your display and stream it to your Linux machine.</string>
+
+    <!-- Network -->
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>DualLink uses the local network to stream your screen to a Linux receiver.</string>
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_duallink._tcp</string>
+    </array>
+
+    <!-- Prevent auto-termination while streaming -->
+    <key>NSSupportsSuddenTermination</key>
+    <false/>
+</dict>
+</plist>

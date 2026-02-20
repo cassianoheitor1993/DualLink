@@ -27,9 +27,7 @@ let package = Package(
                 "Discovery",
             ],
             path: "Sources/DualLinkApp",
-            resources: [
-                .process("Resources"),
-            ]
+            resources: []
         ),
 
         // MARK: — Core (tipos compartilhados, config, errors)

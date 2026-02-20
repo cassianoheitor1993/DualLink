@@ -33,6 +33,9 @@ final class AppState: ObservableObject {
     @Published var framesSent: UInt64 = 0
     @Published var lastError: String?
 
+    // When true we are already tearing down — suppress cascading onStateChange teardown
+    private var isTearingDown = false
+
     // MARK: - Managers
 
     let virtualDisplayManager = VirtualDisplayManager()
@@ -67,6 +70,11 @@ final class AppState: ObservableObject {
                 guard let self else { return }
                 if case .failed(let reason) = state {
                     Task { @MainActor in
+                        // Only react to drops while actively streaming.
+                        // During setup, the real error is already in lastError
+                        // and teardown() is already being called from the catch block.
+                        guard !self.isTearingDown,
+                              case .streaming = self.connectionState else { return }
                         self.lastError = "Signaling lost: \(reason)"
                         await self.teardown()
                         self.connectionState = .error(reason: reason)
@@ -128,8 +136,9 @@ final class AppState: ObservableObject {
             ))
 
         } catch {
-            lastError = error.localizedDescription
-            connectionState = .error(reason: error.localizedDescription)
+            let msg = error.localizedDescription
+            lastError = msg
+            connectionState = .error(reason: msg)
             await teardown()
         }
     }
@@ -144,6 +153,9 @@ final class AppState: ObservableObject {
     // MARK: - Private
 
     private func teardown() async {
+        guard !isTearingDown else { return }
+        isTearingDown = true
+        defer { isTearingDown = false }
         try? await screenCaptureManager.stopCapture()
         videoEncoder.onEncodedData = nil
         videoEncoder.invalidate()

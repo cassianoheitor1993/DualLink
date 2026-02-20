@@ -1,11 +1,12 @@
 import SwiftUI
+import AppKit
 import DualLinkCore
 import VirtualDisplay
 import ScreenCapture
 
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
-    @State private var receiverHost: String = ""
+    @State private var receiverHost: String = "10.0.0.59"
 
     var body: some View {
         VStack(spacing: 0) {
@@ -21,6 +22,13 @@ struct ContentView: View {
         }
         .frame(width: 380)
         .background(.ultraThinMaterial)
+        .onAppear {
+            // Make the window key so TextField accepts keyboard input
+            NSApp.activate(ignoringOtherApps: true)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                NSApp.mainWindow?.makeKeyAndOrderFront(nil)
+            }
+        }
     }
 }
 
@@ -28,6 +36,7 @@ struct ContentView: View {
 
 private struct ConnectView: View {
     @Binding var receiverHost: String
+    @FocusState private var isFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -37,6 +46,8 @@ private struct ConnectView: View {
             TextField("192.168.1.x", text: $receiverHost)
                 .textFieldStyle(.roundedBorder)
                 .font(.system(.body, design: .monospaced))
+                .focused($isFocused)
+                .onAppear { isFocused = true }
         }
         .padding(.horizontal)
         .padding(.vertical, 10)
@@ -121,13 +132,26 @@ private struct StatusView: View {
                 StreamingStatusRow(label: "Bitrate", value: "\(session.config.maxBitrateBps / 1_000_000) Mbps")
                 StreamingStatusRow(label: "Transport", value: session.connectionMode.rawValue.uppercased())
             } else if let error = appState.lastError {
-                HStack {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.red)
-                    Text(error)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(alignment: .top, spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.red)
+                        Text(error)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer()
+                    }
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(error, forType: .string)
+                    } label: {
+                        Label("Copy error", systemImage: "doc.on.doc")
+                            .font(.caption2)
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.secondary)
                 }
             } else {
                 Text("Waiting to connect...")

@@ -174,19 +174,28 @@ public final class VirtualDisplayManager: ObservableObject {
         display.perform(applySel, with: settings)
 
         // ── Step 5: Verify ──────────────────────────────────────────────────
-        Thread.sleep(forTimeInterval: 0.1)  // give WindowServer time to register
-
+        // Poll CGGetActiveDisplayList — WindowServer may take up to ~2s to register.
         guard let displayID = display.value(forKey: "displayID") as? CGDirectDisplayID,
               displayID != kCGNullDirectDisplay else {
             throw VirtualDisplayError.displayIDNotFound
         }
 
-        var ids = [CGDirectDisplayID](repeating: 0, count: 16)
-        var count: UInt32 = 0
-        CGGetActiveDisplayList(16, &ids, &count)
-        guard ids.prefix(Int(count)).contains(displayID) else {
+        var appeared = false
+        for attempt in 1...20 {        // up to 2 seconds (20 × 100ms)
+            var ids = [CGDirectDisplayID](repeating: 0, count: 16)
+            var count: UInt32 = 0
+            CGGetActiveDisplayList(16, &ids, &count)
+            if ids.prefix(Int(count)).contains(displayID) {
+                appeared = true
+                break
+            }
+            Thread.sleep(forTimeInterval: 0.1)
+            _ = attempt   // silence warning
+        }
+
+        guard appeared else {
             throw VirtualDisplayError.creationFailed(
-                "displayID \(displayID) not in CGGetActiveDisplayList — " +
+                "displayID \(displayID) not in CGGetActiveDisplayList after 2s — " +
                 "ensure NSApplication is running and display mode has valid dimensions"
             )
         }

@@ -23,7 +23,8 @@ public final class ScreenCaptureManager: NSObject, ObservableObject {
 
     public typealias FrameHandler = @Sendable (CapturedFrame) -> Void
 
-    public struct CapturedFrame: Sendable {
+    // CVPixelBuffer backed by IOSurface is safe to cross actor boundaries.
+    public struct CapturedFrame: @unchecked Sendable {
         /// Frame de vídeo — IOSurface-backed (zero-copy para VideoToolbox).
         public let pixelBuffer: CVPixelBuffer
         /// Timestamp de apresentação.
@@ -161,12 +162,11 @@ extension ScreenCaptureManager: SCStreamOutput {
             height: CVPixelBufferGetHeight(pixelBuffer)
         )
 
-        // Métricas de FPS
+        // Métricas de FPS + frame delivery on MainActor
         Task { @MainActor [weak self] in
             self?.updateFPS()
+            self?.frameHandler?(frame)
         }
-
-        frameHandler?(frame)
     }
 
     @MainActor

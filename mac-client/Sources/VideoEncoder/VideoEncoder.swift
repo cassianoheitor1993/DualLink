@@ -92,15 +92,15 @@ public final class VideoEncoder: @unchecked Sendable {
         // Frame properties — forçar keyframe a cada N segundos é gerenciado pelo MaxKeyFrameInterval
         let frameProperties: CFDictionary? = nil
 
-        // PERF: VTCompressionSessionEncodeFrame é não-bloqueante com o output callback configurado
+        // PERF: Use the outputCallback variant (registered at session creation) — non-blocking
         VTCompressionSessionEncodeFrame(
             session,
             imageBuffer: pixelBuffer,
             presentationTimeStamp: presentationTime,
             duration: CMTime(value: 1, timescale: CMTimeScale(config.targetFPS)),
             frameProperties: frameProperties,
-            infoFlagsOut: nil,
-            outputHandler: nil
+            sourceFrameRefcon: nil,
+            infoFlagsOut: nil
         )
     }
 
@@ -164,8 +164,15 @@ private let compressionOutputCallback: VTCompressionOutputCallback = { refcon, _
 extension VideoEncoder {
     /// Processa um CMSampleBuffer encodado e extrai NAL units.
     func handleEncodedSampleBuffer(_ sampleBuffer: CMSampleBuffer, flags: VTEncodeInfoFlags) {
-        let isKeyframe = !flags.contains(.frameDropped)
-            && sampleBuffer.attachments.propagated[.dependsOnOthers] as? Bool != true
+        // Keyframe detection: check kCMSampleAttachmentKey_NotSync
+        // A frame is a keyframe if NotSync is absent or false.
+        let isKeyframe: Bool = !flags.contains(.frameDropped) && {
+            guard let attachments = CMSampleBufferGetSampleAttachmentsArray(
+                sampleBuffer, createIfNecessary: false
+            ) as? [[CFString: Any]],
+            let first = attachments.first else { return true }
+            return first[kCMSampleAttachmentKey_NotSync] as? Bool != true
+        }()
 
         guard let dataBuffer = sampleBuffer.dataBuffer else { return }
 

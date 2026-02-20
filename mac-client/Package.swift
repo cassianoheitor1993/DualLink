@@ -35,10 +35,19 @@ let package = Package(
             path: "Sources/DualLinkCore"
         ),
 
+        // MARK: — Virtual Display ObjC Helper (CGVirtualDisplayMode creation)
+        // Needed because initWithWidth:height:refreshRate: takes primitive types
+        // that can't be bridged via Swift's perform() selector API.
+        .target(
+            name: "VirtualDisplayObjC",
+            path: "Sources/VirtualDisplayObjC",
+            publicHeadersPath: "include"
+        ),
+
         // MARK: — Virtual Display (CGVirtualDisplay)
         .target(
             name: "VirtualDisplay",
-            dependencies: ["DualLinkCore"],
+            dependencies: ["DualLinkCore", "VirtualDisplayObjC"],
             path: "Sources/VirtualDisplay"
         ),
 

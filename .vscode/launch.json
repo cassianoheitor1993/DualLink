@@ -1,0 +1,44 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:screen-mirroring-app}/poc/poc-virtual-display-app",
+            "name": "Debug PoCVirtualDisplayApp (poc/poc-virtual-display-app)",
+            "target": "PoCVirtualDisplayApp",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug PoCVirtualDisplayApp (poc/poc-virtual-display-app)"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:screen-mirroring-app}/poc/poc-virtual-display-app",
+            "name": "Release PoCVirtualDisplayApp (poc/poc-virtual-display-app)",
+            "target": "PoCVirtualDisplayApp",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release PoCVirtualDisplayApp (poc/poc-virtual-display-app)"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:screen-mirroring-app}/poc/poc-screen-capture",
+            "name": "Debug PoCScreenCapture (poc/poc-screen-capture)",
+            "target": "PoCScreenCapture",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug PoCScreenCapture (poc/poc-screen-capture)"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:screen-mirroring-app}/poc/poc-screen-capture",
+            "name": "Release PoCScreenCapture (poc/poc-screen-capture)",
+            "target": "PoCScreenCapture",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release PoCScreenCapture (poc/poc-screen-capture)"
+        }
+    ]
+}

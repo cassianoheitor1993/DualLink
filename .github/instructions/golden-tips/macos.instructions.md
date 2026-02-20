@@ -9,20 +9,17 @@ applyTo: "mac-client/**"
 
 ---
 
-### GT-1001: CGVirtualDisplay — Cria display com ID válido mas não aparece em CGGetActiveDisplayList/CGGetOnlineDisplayList
+### GT-1001: CGVirtualDisplay — Precisa de .app bundle + NSApplication + CGVirtualDisplayMode com dimensões reais
 
 - **Data:** 2026-02-20
-- **Contexto:** Sprint 0.1 — PoC para criar display virtual usando CGVirtualDisplay (macOS 26.3 / Build 25D125)
-- **Sintoma:** `initWithDescriptor:` → displayID retorna valor não-zero (7, 8, etc.) e `applySettings:` é chamado com sucesso. Mas `CGGetActiveDisplayList` e `CGGetOnlineDisplayList` não incluem o displayID — o display não aparece no sistema. Display ID incrementa a cada execução (6, 7, 8...) sugerindo que CG rastreia as alocações.
-- **Causa raiz:** Duas hipóteses prováveis (a serem validadas em Sprint 0.1.4):
-  1. **Entitlement faltando** — CGVirtualDisplay provavelmente requer `com.apple.developer.CoreGraphics.virtual-display` ou similar. Scripts CLI sem app bundle assinado não recebem essa autorização do WindowServer.
-  2. **Modo de display inválido** — `CGVirtualDisplayMode` foi criado via `init()` sem dimensions. Pode ser necessário passar modo com `initWithWidth:height:refreshRate:` para o display ser registrado.
-- **Solução:** Para validar completamente:
-  1. Criar `.app` bundle com `Info.plist` e entitlements
-  2. Usar `CGVirtualDisplayMode initWithWidth:height:refreshRate:` com dimensões reais — chamar via Objective-C wrapper ou extension
-  3. Verificar em Xcode signed app se display aparece em System Settings > Displays
-- **Pista-chave:** O display ID não-zero indica que a **API funciona** — o problema é de autorização/configuração, não de ausência de API. Próximo passo: app bundle assinado.
-- **Tags:** #CGVirtualDisplay #entitlements #display #windowserver #sprint-0.1
+- **Contexto:** Sprint 0.1 — PoC para criar display virtual usando CGVirtualDisplay (macOS 26.3)
+- **Sintoma:** CLI script: displayID não-zero mas não aparece em CGGetActiveDisplayList. App bundle com modo vazio: idem. App bundle com modo real: ✅ funciona.
+- **Causa raiz:** DUAS coisas eram necessárias simultaneamente:
+  1. **NSApplication + WindowServer session** — `NSApplication.shared` precisa ser inicializado para o processo ter acesso ao WindowServer. CLI tools não têm essa conexão.
+  2. **CGVirtualDisplayMode com dimensões reais** — `CGVirtualDisplaySettings` precisa conter um modo criado via `initWithWidth:height:refreshRate:` com valores válidos (ex: 1920, 1080, 30.0). Modo vazio (`init()` plain) não registra o display.
+- **Solução:** Ver GT-1005 para o recipe completo.
+- **Pista-chave:** Quando um display ID é válido mas não aparece no sistema, checar (1) se NSApplication está inicializado e (2) se o modo de display tem dimensões válidas.
+- **Tags:** #CGVirtualDisplay #entitlements #display #windowserver #NSApplication #sprint-0.1
 
 ---
 
@@ -86,6 +83,54 @@ applyTo: "mac-client/**"
 
 ---
 
-**Total de tips:** 4
+### GT-1005: CGVirtualDisplay — Recipe completo e validado (macOS 26.3)
+
+- **Data:** 2026-02-20
+- **Contexto:** Sprint 0.1.4 — CGVirtualDisplay confirmado funcional ✅
+- **Recipe validado:**
+
+  ```swift
+  // 1. Inicializar NSApplication (OBRIGATÓRIO — cria sessão WindowServer)
+  let app = NSApplication.shared
+  app.setActivationPolicy(.accessory)
+
+  // 2. Criar descriptor
+  let desc = NSClassFromString("CGVirtualDisplayDescriptor")!.init() as! NSObject
+  desc.setValue("DualLink", forKey: "name")
+  desc.setValue(UInt32(1920), forKey: "maxPixelsWide")
+  desc.setValue(UInt32(1080), forKey: "maxPixelsHigh")
+  desc.setValue(NSValue(size: CGSize(width: 527, height: 297)), forKey: "sizeInMillimeters")
+  // terminationHandler é importante para cleanup correto
+  let term: @convention(block) () -> Void = { /* cleanup */ }
+  desc.setValue(term as AnyObject, forKey: "terminationHandler")
+
+  // 3. Criar display com initWithDescriptor:
+  let dispClass = NSClassFromString("CGVirtualDisplay")! as! NSObject.Type
+  let alloc = dispClass.perform(NSSelectorFromString("alloc"))!.takeUnretainedValue() as! NSObject
+  let display = alloc.perform(NSSelectorFromString("initWithDescriptor:"), with: desc)!.takeRetainedValue() as! NSObject
+
+  // 4. Criar modo de display via ObjC (não pode ser feito em Swift puro — args primitivos)
+  // Usar helper ObjC: DualLinkCreateVirtualDisplayMode(1920, 1080, 30.0)
+  // OU via objc_msgSend direto com types: (id, SEL, NSUInteger, NSUInteger, double)
+
+  // 5. Aplicar settings
+  let sett = NSClassFromString("CGVirtualDisplaySettings")!.init() as! NSObject
+  sett.setValue(false, forKey: "hiDPI")
+  sett.setValue([mode], forKey: "modes")  // OBRIGATÓRIO: modo com dimensões reais
+  display.perform(NSSelectorFromString("applySettings:"), with: sett)
+
+  // 6. Rodar app runloop (DisplayID só aparece no sistema após runloop iniciar)
+  app.run()
+  ```
+
+- **Sem entitlements especiais necessários** — ad-hoc signing (`codesign --sign -`) é suficiente
+- **Info.plist mínimo:** `CFBundleIdentifier`, `LSUIElement: true` (background app), `NSPrincipalClass: NSApplication`
+- **Resultado em macOS 26.3:** display aparece em `CGGetActiveDisplayList` + `CGGetOnlineDisplayList` ✅
+- **Pista-chave:** `sett.setValue([mode], forKey: "modes")` com modo real é o passo crítico. Modo vazio não registra o display.
+- **Tags:** #CGVirtualDisplay #recipe #validated #NSApplication #sprint-0.1
+
+---
+
+**Total de tips:** 5
 **Última atualização:** 2026-02-20
-**Economia estimada:** 5h (entitlements, selectors, pixel format, performance baseline)
+**Economia estimada:** 6h (entitlements, selectors, pixel format, app bundle setup, display mode config)

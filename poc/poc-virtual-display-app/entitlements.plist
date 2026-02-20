@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+        CGVirtualDisplay entitlements PoC — Sprint 0.1.4
+        
+        Trying without App Sandbox first. CGVirtualDisplay is a public
+        CoreGraphics API (macOS 14+). A signed GUI app may be sufficient
+        to get WindowServer authorization without a private entitlement.
+        
+        If that fails, iterate by adding:
+        - com.apple.developer.CoreGraphics.virtual-display
+        - com.apple.security.app-sandbox (with network client if needed)
+    -->
+    
+    <!-- Ad-hoc / development signing: no sandbox = max permissions -->
+    <key>com.apple.security.app-sandbox</key>
+    <false/>
+    
+    <!-- Allow access to all network connections -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+    <key>com.apple.security.network.server</key>
+    <true/>
+</dict>
+</plist>

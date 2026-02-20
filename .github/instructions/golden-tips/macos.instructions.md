@@ -131,6 +131,18 @@ applyTo: "mac-client/**"
 
 ---
 
-**Total de tips:** 5
+### GT-1006: CGVirtualDisplay — macOS display count limit with external monitors
+
+- **Data:** 2026-02-20
+- **Contexto:** Sprint 2.1 — Extend mode virtual display creation failing
+- **Sintoma:** `displayID 40 not in CGGetActiveDisplayList after 5s` — virtual display creates successfully (valid ID) but never appears in the active or online display list
+- **Causa raiz:** macOS has a hard limit on concurrent displays. With 2 external monitors already connected, the virtual display could not be registered by WindowServer despite getting a valid display ID.
+- **Solução:** Disconnect one or more external monitors before creating the virtual display. The display count limit varies by GPU/machine — Apple Silicon typically supports up to 2-3 external displays.
+- **Pista-chave:** If the virtual display ID is non-zero but never appears in `CGGetActiveDisplayList` or `CGDisplayIsOnline`, check how many displays are already connected. `CGGetOnlineDisplayList` will show the current count.
+- **Tags:** #CGVirtualDisplay #display-limit #external-monitors #sprint-2.1
+
+---
+
+**Total de tips:** 6
 **Última atualização:** 2026-02-20
-**Economia estimada:** 6h (entitlements, selectors, pixel format, app bundle setup, display mode config)
+**Economia estimada:** 7h (entitlements, selectors, pixel format, app bundle setup, display mode config, display limit)

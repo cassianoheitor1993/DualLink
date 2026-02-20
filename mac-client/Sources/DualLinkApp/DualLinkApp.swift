@@ -56,6 +56,12 @@ final class AppState: ObservableObject {
 
     private var fpsCounter = FPSCounter()
     private var sessionID: String = ""
+    private var reconnectTask: Task<Void, Never>?
+    private var lastHost: String = ""
+    private var lastConfig: StreamConfig = .default
+    private var lastDisplayMode: DisplayMode = .extend
+    private var reconnectAttempt: Int = 0
+    private let maxReconnectAttempts: Int = 5
 
     // MARK: - Connect & Stream
 
@@ -68,6 +74,10 @@ final class AppState: ObservableObject {
         guard case .idle = connectionState else { return }
         lastError = nil
         sessionID = UUID().uuidString
+        lastHost = host
+        lastConfig = config
+        lastDisplayMode = displayMode
+        reconnectAttempt = 0
 
         do {
             // ── 1. Connect Signaling (TCP) ─────────────────────────────────────
@@ -80,11 +90,17 @@ final class AppState: ObservableObject {
                     guard let self else { return }
                     if case .failed(let reason) = state {
                         Task { @MainActor in
-                            guard !self.isTearingDown,
-                                  case .streaming = self.connectionState else { return }
-                            self.lastError = "Signaling lost: \(reason)"
-                            await self.teardown()
-                            self.connectionState = .error(reason: reason)
+                            guard !self.isTearingDown else { return }
+                            if case .streaming = self.connectionState {
+                                print("[DualLink] Connection lost: \(reason) — attempting reconnect")
+                                await self.attemptReconnect()
+                            } else if case .reconnecting = self.connectionState {
+                                // Already reconnecting
+                            } else {
+                                self.lastError = "Signaling failed: \(reason)"
+                                await self.teardown()
+                                self.connectionState = .error(reason: reason)
+                            }
                         }
                     }
                 },
@@ -129,11 +145,17 @@ final class AppState: ObservableObject {
             videoEncoder.onEncodedData = { [weak self] nalData, pts, isKeyframe in
                 guard let self else { return }
                 Task {
+                    let senderState = await self.videoSender.state
+                    guard senderState == .ready else {
+                        self.videoEncoder.notifyFrameDropped()
+                        return
+                    }
                     await self.videoSender.send(
                         nalData: nalData,
                         presentationTime: pts,
                         isKeyframe: isKeyframe
                     )
+                    self.videoEncoder.notifyFrameSent()
                     let sent = await self.videoSender.framesSent
                     if sent == 1 {
                         print("[DualLink] First encoded frame sent: \(nalData.count) bytes keyframe=\(isKeyframe)")
@@ -176,8 +198,87 @@ final class AppState: ObservableObject {
     // MARK: - Stop
 
     func stopStreaming() async {
+        reconnectTask?.cancel()
+        reconnectTask = nil
         try? await signalingClient.sendStop(sessionID: sessionID)
         await teardown()
+    }
+
+    // MARK: - Reconnect
+
+    private func attemptReconnect() async {
+        reconnectAttempt += 1
+        guard reconnectAttempt <= maxReconnectAttempts else {
+            lastError = "Connection lost after \(maxReconnectAttempts) reconnect attempts"
+            await teardown()
+            connectionState = .error(reason: lastError!)
+            return
+        }
+
+        let peer = PeerInfo(id: sessionID, name: lastHost, address: lastHost, port: 7879)
+        connectionState = .reconnecting(peer: peer, attempt: reconnectAttempt)
+        print("[DualLink] Reconnect attempt \(reconnectAttempt)/\(maxReconnectAttempts)")
+
+        // Tear down current pipeline but don't go idle
+        isTearingDown = true
+        try? await screenCaptureManager.stopCapture()
+        videoEncoder.onEncodedData = nil
+        videoEncoder.invalidate()
+        await videoSender.disconnect()
+        await signalingClient.disconnect()
+        // Keep virtual display alive across reconnects in extend mode
+        isTearingDown = false
+
+        // Exponential backoff: 1s, 2s, 4s, 8s, 16s
+        let delaySec = UInt64(pow(2.0, Double(reconnectAttempt - 1)))
+        print("[DualLink] Waiting \(delaySec)s before reconnect...")
+        try? await Task.sleep(nanoseconds: delaySec * 1_000_000_000)
+
+        guard !Task.isCancelled else { return }
+
+        do {
+            try await signalingClient.connect(host: lastHost)
+            try videoEncoder.configure(config: lastConfig)
+            try await videoSender.connect(host: lastHost)
+
+            videoEncoder.onEncodedData = { [weak self] nalData, pts, isKeyframe in
+                guard let self else { return }
+                Task {
+                    await self.videoSender.send(nalData: nalData, presentationTime: pts, isKeyframe: isKeyframe)
+                    let sent = await self.videoSender.framesSent
+                    await MainActor.run {
+                        self.framesSent = sent
+                        self.streamFPS = self.fpsCounter.tick()
+                    }
+                }
+            }
+
+            // Re-capture the same display
+            let captureID: CGDirectDisplayID
+            if lastDisplayMode == .extend, let vid = virtualDisplayManager.activeDisplayID {
+                captureID = vid
+            } else {
+                captureID = CGMainDisplayID()
+            }
+            try await screenCaptureManager.startCapture(displayID: captureID, config: lastConfig) { [weak self] frame in
+                guard let self else { return }
+                self.videoEncoder.encode(pixelBuffer: frame.pixelBuffer, presentationTime: frame.presentationTime)
+            }
+
+            try await signalingClient.sendHello(sessionID: sessionID, config: lastConfig)
+
+            reconnectAttempt = 0
+            connectionState = .streaming(session: SessionInfo(
+                sessionID: sessionID,
+                peer: PeerInfo(id: sessionID, name: lastHost, address: lastHost, port: 7878),
+                config: lastConfig,
+                connectionMode: .wifi
+            ))
+            print("[DualLink] Reconnected successfully!")
+        } catch {
+            print("[DualLink] Reconnect failed: \(error.localizedDescription)")
+            await attemptReconnect()
+        }
     }
 
     // MARK: - Private

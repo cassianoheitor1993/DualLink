@@ -9,6 +9,8 @@ struct ContentView: View {
     @State private var receiverHost: String = "10.0.0.59"
     @State private var use60fps: Bool = true
     @State private var displayMode: DisplayMode = .extend
+    @State private var selectedResolution: Resolution = .fhd
+    @State private var selectedCodec: VideoCodec = .h264
 
     var body: some View {
         VStack(spacing: 0) {
@@ -17,10 +19,22 @@ struct ContentView: View {
             StatusView()
             Divider()
             if !appState.connectionState.isActive {
-                ConnectView(receiverHost: $receiverHost, use60fps: $use60fps, displayMode: $displayMode)
+                ConnectView(
+                    receiverHost: $receiverHost,
+                    use60fps: $use60fps,
+                    displayMode: $displayMode,
+                    selectedResolution: $selectedResolution,
+                    selectedCodec: $selectedCodec
+                )
                 Divider()
             }
-            ControlsView(receiverHost: receiverHost, use60fps: use60fps, displayMode: displayMode)
+            ControlsView(
+                receiverHost: receiverHost,
+                use60fps: use60fps,
+                displayMode: displayMode,
+                selectedResolution: selectedResolution,
+                selectedCodec: selectedCodec
+            )
         }
         .frame(width: 380)
         .background(.ultraThinMaterial)
@@ -40,6 +54,8 @@ private struct ConnectView: View {
     @Binding var receiverHost: String
     @Binding var use60fps: Bool
     @Binding var displayMode: DisplayMode
+    @Binding var selectedResolution: Resolution
+    @Binding var selectedCodec: VideoCodec
     @FocusState private var isFocused: Bool
 
     var body: some View {
@@ -60,6 +76,31 @@ private struct ConnectView: View {
                 Picker("", selection: $displayMode) {
                     Text("Extend Display").tag(DisplayMode.extend)
                     Text("Mirror Display").tag(DisplayMode.mirror)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            }
+
+            // Resolution picker
+            HStack(spacing: 8) {
+                Image(systemName: "rectangle.arrowtriangle.2.outward")
+                    .foregroundStyle(.blue)
+                Picker("", selection: $selectedResolution) {
+                    ForEach(Resolution.allPresets, id: \.width) { res in
+                        Text(res.label).tag(res)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            }
+
+            // Codec picker
+            HStack(spacing: 8) {
+                Image(systemName: "video")
+                    .foregroundStyle(.blue)
+                Picker("", selection: $selectedCodec) {
+                    Text("H.264").tag(VideoCodec.h264)
+                    Text("H.265").tag(VideoCodec.h265)
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
@@ -218,6 +259,8 @@ private struct ControlsView: View {
     let receiverHost: String
     let use60fps: Bool
     let displayMode: DisplayMode
+    let selectedResolution: Resolution
+    let selectedCodec: VideoCodec
 
     var body: some View {
         HStack(spacing: 8) {
@@ -233,7 +276,8 @@ private struct ControlsView: View {
             } else {
                 Button {
                     guard !receiverHost.isEmpty else { return }
-                    let config = use60fps ? StreamConfig.highPerformance : StreamConfig.default
+                    let fps = use60fps ? 60 : 30
+                    let config = StreamConfig.recommended(resolution: selectedResolution, fps: fps, codec: selectedCodec)
                     Task { await appState.connectAndStream(to: receiverHost, config: config, displayMode: displayMode) }
                 } label: {
                     let label = displayMode == .extend ? "Start Extending" : "Start Mirroring"

@@ -63,6 +63,14 @@ public final class InputInjectionManager: @unchecked Sendable {
             injectKey(keycode: keycode, isDown: true)
         case .keyUp(let keycode):
             injectKey(keycode: keycode, isDown: false)
+        case .gesturePinch(_, _, let magnification, let phase):
+            injectMagnification(magnification: magnification, phase: phase)
+        case .gestureRotation(_, _, let rotation, let phase):
+            injectRotation(rotation: rotation, phase: phase)
+        case .gestureSwipe(let deltaX, let deltaY, let phase):
+            injectSwipe(deltaX: deltaX, deltaY: deltaY, phase: phase)
+        case .scrollSmooth(_, _, let deltaX, let deltaY, let phase):
+            injectSmoothScroll(deltaX: deltaX, deltaY: deltaY, phase: phase)
         }
 
         eventsInjected += 1
@@ -102,6 +110,70 @@ public final class InputInjectionManager: @unchecked Sendable {
         guard let event = CGEvent(keyboardEventSource: nil,
                                    virtualKey: CGKeyCode(macKeycode),
                                    keyDown: isDown) else { return }
+        event.post(tap: .cgSessionEventTap)
+    }
+
+    // MARK: - Private: Trackpad Gestures
+
+    /// CGEvent field IDs for scroll/gesture phase and momentum.
+    /// These are not publicly documented but stable across macOS versions.
+    private static let scrollPhaseField = CGEventField(rawValue: 99)!        // kCGScrollWheelEventScrollPhase
+    private static let momentumPhaseField = CGEventField(rawValue: 123)!     // kCGScrollWheelEventMomentumPhase
+
+    /// Map GesturePhase to macOS scroll event phase values.
+    private func scrollPhaseValue(_ phase: GesturePhase) -> Int64 {
+        switch phase {
+        case .begin: return 1       // kCGScrollPhaseBegan
+        case .changed: return 2     // kCGScrollPhaseChanged
+        case .end: return 4         // kCGScrollPhaseEnded
+        case .cancelled: return 8   // kCGScrollPhaseCancelled
+        }
+    }
+
+    private func injectMagnification(magnification: Double, phase: GesturePhase) {
+        // Use CGEventType 29 (NSEventTypeMagnify) — the raw value for magnification events.
+        // This is a private but stable CGEventType used by macOS trackpad gesture system.
+        guard let event = CGEvent(source: nil) else { return }
+        event.type = CGEventType(rawValue: 29)!
+        // Store magnification in the event's double field
+        event.setDoubleValueField(CGEventField(rawValue: 113)!, value: magnification)
+        event.setIntegerValueField(Self.scrollPhaseField, value: scrollPhaseValue(phase))
+        event.post(tap: .cgSessionEventTap)
+    }
+
+    private func injectRotation(rotation: Double, phase: GesturePhase) {
+        // Use CGEventType 18 (NSEventTypeRotate)
+        guard let event = CGEvent(source: nil) else { return }
+        event.type = CGEventType(rawValue: 18)!
+        event.setDoubleValueField(CGEventField(rawValue: 114)!, value: rotation)
+        event.setIntegerValueField(Self.scrollPhaseField, value: scrollPhaseValue(phase))
+        event.post(tap: .cgSessionEventTap)
+    }
+
+    private func injectSwipe(deltaX: Double, deltaY: Double, phase: GesturePhase) {
+        // Three/four-finger swipe — inject as gesture scroll with momentum
+        // macOS interprets large-delta momentum scrolls as swipe gestures
+        // in contexts like Safari (navigate back/forward) and Mission Control.
+        guard let event = CGEvent(scrollWheelEvent2Source: nil, units: .pixel,
+                                   wheelCount: 2,
+                                   wheel1: Int32(deltaY * 100),
+                                   wheel2: Int32(deltaX * 100),
+                                   wheel3: 0) else { return }
+        if phase == .end {
+            event.setIntegerValueField(Self.momentumPhaseField, value: scrollPhaseValue(phase))
+        } else {
+            event.setIntegerValueField(Self.scrollPhaseField, value: scrollPhaseValue(phase))
+        }
+        event.post(tap: .cgSessionEventTap)
+    }
+
+    private func injectSmoothScroll(deltaX: Double, deltaY: Double, phase: GesturePhase) {
+        // Smooth / continuous scroll with phase for momentum support
+        guard let event = CGEvent(scrollWheelEvent2Source: nil, units: .pixel,
+                                   wheelCount: 2,
+                                   wheel1: Int32(deltaY), wheel2: Int32(deltaX),
+                                   wheel3: 0) else { return }
+        event.setIntegerValueField(Self.scrollPhaseField, value: scrollPhaseValue(phase))
         event.post(tap: .cgSessionEventTap)
     }
 

@@ -156,7 +156,7 @@ impl Drop for GStreamerDecoder {
 ///
 /// # Pipeline
 /// ```text
-/// appsrc → h264parse → [decoder] → autovideosink sync=false
+/// appsrc → h264parse → [decoder] → autovideosink sync=true (PTS-paced)
 /// ```
 ///
 /// **Must be called from `tokio::task::spawn_blocking`** — GStreamer
@@ -174,14 +174,12 @@ pub struct GStreamerDisplayDecoder {
 
 impl GStreamerDisplayDecoder {
     /// Build and start the decode+display pipeline.
+    ///
+    /// Frame pacing: Uses `sync=true` on `autovideosink` with PTS-based timing
+    /// via the pipeline clock.  The sender stamps each frame with a PTS; GStreamer
+    /// schedules rendering at the right time.  If network jitter causes late frames,
+    /// `max-lateness=20000000` (20ms) allows slight skips without dropping.
     pub fn new(element: &'static str, width: u32, height: u32) -> Result<Self, DecoderError> {
-        // VA-API decoders output surfaces with alignment-padded heights
-        // (e.g. 1088 instead of 1080).  `videoconvert` can't map those
-        // surfaces properly → "info->height <= meta->height" assertion.
-        //
-        // Fix: for vaapi decoders, use `vaapipostproc` which operates
-        // natively on VA surfaces.  For software decoders, use plain
-        // `videoconvert`.
         let is_vaapi = element.starts_with("vaapi");
         let postproc = if is_vaapi {
             "vaapipostproc".to_string()
@@ -189,12 +187,13 @@ impl GStreamerDisplayDecoder {
             "videoconvert ! videoscale".to_string()
         };
 
+        // sync=true enables frame pacing via PTS; max-lateness tolerates 20ms jitter
         let pipeline_str = format!(
-            "appsrc name=src format=time is-live=true \
+            "appsrc name=src format=time is-live=true do-timestamp=true \
              ! h264parse \
              ! {element} \
              ! {postproc} \
-             ! autovideosink name=videosink sync=false"
+             ! autovideosink name=videosink sync=true max-lateness=20000000"
         );
 
         let pipeline = gst::parse::launch(&pipeline_str)

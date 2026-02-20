@@ -39,6 +39,14 @@ public final class VideoEncoder: @unchecked Sendable {
     private var compressionSession: VTCompressionSession?
     private let encoderQueue = DispatchQueue(label: "com.duallink.encoder", qos: .userInteractive)
 
+    // Adaptive bitrate state
+    private var currentBitrate: Int = 0
+    private var minBitrate: Int = 2_000_000       // 2 Mbps floor
+    private var maxBitrate: Int = 30_000_000      // 30 Mbps ceiling
+    private var consecutiveDrops: Int = 0
+    private var framesSinceLastAdapt: Int = 0
+    private let adaptInterval: Int = 60           // re-evaluate every 60 frames
+
     // MARK: - Init
 
     public init() {}
@@ -54,6 +62,11 @@ public final class VideoEncoder: @unchecked Sendable {
     public func configure(config: StreamConfig) throws {
         invalidate()
         self.config = config
+        self.currentBitrate = config.maxBitrateBps
+        self.maxBitrate = config.maxBitrateBps
+        self.minBitrate = max(2_000_000, config.maxBitrateBps / 8)
+        self.consecutiveDrops = 0
+        self.framesSinceLastAdapt = 0
 
         let codecType: CMVideoCodecType = config.codec == .h265
             ? kCMVideoCodecType_HEVC
@@ -110,6 +123,46 @@ public final class VideoEncoder: @unchecked Sendable {
         VTCompressionSessionInvalidate(session)
         compressionSession = nil
         isConfigured = false
+    }
+
+    // MARK: - Adaptive Bitrate
+
+    /// Notify the encoder that a frame was dropped (e.g. send queue full).
+    /// Used by VideoSender to signal network congestion.
+    public func notifyFrameDropped() {
+        consecutiveDrops += 1
+    }
+
+    /// Notify the encoder that a frame was sent successfully.
+    public func notifyFrameSent() {
+        consecutiveDrops = 0
+        framesSinceLastAdapt += 1
+        if framesSinceLastAdapt >= adaptInterval {
+            framesSinceLastAdapt = 0
+            adaptBitrateUp()
+        }
+    }
+
+    /// Reduce bitrate immediately on congestion.
+    private func adaptBitrateDown() {
+        guard let session = compressionSession else { return }
+        let newBitrate = max(minBitrate, currentBitrate * 3 / 4) // drop 25%
+        guard newBitrate != currentBitrate else { return }
+        currentBitrate = newBitrate
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: newBitrate as CFTypeRef)
+        print("[VideoEncoder] Bitrate down → \(newBitrate / 1_000_000) Mbps (drops=\(consecutiveDrops))")
+    }
+
+    /// Gradually increase bitrate when network is stable.
+    private func adaptBitrateUp() {
+        guard let session = compressionSession,
+              consecutiveDrops == 0,
+              currentBitrate < maxBitrate else { return }
+        let newBitrate = min(maxBitrate, currentBitrate * 11 / 10) // increase 10%
+        guard newBitrate != currentBitrate else { return }
+        currentBitrate = newBitrate
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: newBitrate as CFTypeRef)
+        print("[VideoEncoder] Bitrate up → \(newBitrate / 1_000_000) Mbps")
     }
 
     // MARK: - Private Helpers
@@ -174,6 +227,13 @@ private let compressionOutputCallback: VTCompressionOutputCallback = { refcon, _
 extension VideoEncoder {
     /// Processa um CMSampleBuffer encodado e extrai NAL units.
     func handleEncodedSampleBuffer(_ sampleBuffer: CMSampleBuffer, flags: VTEncodeInfoFlags) {
+        if flags.contains(.frameDropped) {
+            // Encoder itself dropped the frame — signal congestion
+            notifyFrameDropped()
+            adaptBitrateDown()
+            return
+        }
+
         // Keyframe detection: check kCMSampleAttachmentKey_NotSync
         // A frame is a keyframe if NotSync is absent or false.
         let isKeyframe: Bool = !flags.contains(.frameDropped) && {
@@ -208,7 +268,11 @@ extension VideoEncoder {
         annexB.reserveCapacity(dataLength + 64)
 
         if isKeyframe, let formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer) {
-            appendH264ParameterSets(from: formatDesc, into: &annexB, startCode: startCode)
+            if config.codec == .h265 {
+                appendHEVCParameterSets(from: formatDesc, into: &annexB, startCode: startCode)
+            } else {
+                appendH264ParameterSets(from: formatDesc, into: &annexB, startCode: startCode)
+            }
         }
 
         var offset = 0
@@ -252,6 +316,37 @@ extension VideoEncoder {
             var ptr: UnsafePointer<UInt8>?
             var size: Int = 0
             let status = CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
+                formatDesc,
+                parameterSetIndex: idx,
+                parameterSetPointerOut: &ptr,
+                parameterSetSizeOut: &size,
+                parameterSetCountOut: nil,
+                nalUnitHeaderLengthOut: nil
+            )
+            guard status == noErr, let ptr, size > 0 else { continue }
+            out.append(contentsOf: startCode)
+            out.append(contentsOf: UnsafeBufferPointer(start: ptr, count: size))
+        }
+    }
+
+    private func appendHEVCParameterSets(from formatDesc: CMFormatDescription, into out: inout [UInt8], startCode: [UInt8]) {
+        var parameterSetCount: Int = 0
+        var nalHeaderLength: Int32 = 0
+
+        let firstStatus = CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(
+            formatDesc,
+            parameterSetIndex: 0,
+            parameterSetPointerOut: nil,
+            parameterSetSizeOut: nil,
+            parameterSetCountOut: &parameterSetCount,
+            nalUnitHeaderLengthOut: &nalHeaderLength
+        )
+        guard firstStatus == noErr, parameterSetCount > 0 else { return }
+
+        for idx in 0..<parameterSetCount {
+            var ptr: UnsafePointer<UInt8>?
+            var size: Int = 0
+            let status = CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(
                 formatDesc,
                 parameterSetIndex: idx,
                 parameterSetPointerOut: &ptr,

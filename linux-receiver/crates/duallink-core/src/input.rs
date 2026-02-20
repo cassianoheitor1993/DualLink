@@ -55,6 +55,61 @@ pub enum InputEvent {
     KeyUp {
         keycode: u32,
     },
+
+    // -- Trackpad Gestures (Sprint 2.3.4) --
+
+    /// Pinch-to-zoom / magnification gesture.
+    GesturePinch {
+        /// Center of gesture in normalised [0.0, 1.0] coordinates.
+        x: f64,
+        y: f64,
+        /// Magnification delta (positive = zoom in, negative = zoom out).
+        magnification: f64,
+        phase: GesturePhase,
+    },
+
+    /// Rotation gesture (two-finger twist).
+    GestureRotation {
+        /// Center of rotation in normalised [0.0, 1.0] coordinates.
+        x: f64,
+        y: f64,
+        /// Rotation delta in degrees (positive = clockwise).
+        rotation: f64,
+        phase: GesturePhase,
+    },
+
+    /// Multi-finger swipe gesture (three/four fingers).
+    GestureSwipe {
+        /// Swipe direction vector (normalised).
+        delta_x: f64,
+        delta_y: f64,
+        phase: GesturePhase,
+    },
+
+    /// Smooth (continuous) scroll with phase info for momentum scrolling.
+    ScrollSmooth {
+        x: f64,
+        y: f64,
+        delta_x: f64,
+        delta_y: f64,
+        phase: GesturePhase,
+    },
+}
+
+// MARK: - GesturePhase
+
+/// Phase of a trackpad gesture (matches macOS NSEvent.Phase semantics).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GesturePhase {
+    /// Gesture just started.
+    Begin,
+    /// Gesture is ongoing.
+    Changed,
+    /// Gesture ended.
+    End,
+    /// Gesture was cancelled.
+    Cancelled,
 }
 
 // MARK: - MouseButton
@@ -80,6 +135,10 @@ mod tests {
             InputEvent::MouseScroll { x: 0.5, y: 0.5, delta_x: 0.0, delta_y: -3.0 },
             InputEvent::KeyDown { keycode: 38, text: Some("a".to_string()) },
             InputEvent::KeyUp { keycode: 38 },
+            InputEvent::GesturePinch { x: 0.5, y: 0.5, magnification: 0.1, phase: GesturePhase::Changed },
+            InputEvent::GestureRotation { x: 0.5, y: 0.5, rotation: 15.0, phase: GesturePhase::Begin },
+            InputEvent::GestureSwipe { delta_x: 1.0, delta_y: 0.0, phase: GesturePhase::End },
+            InputEvent::ScrollSmooth { x: 0.5, y: 0.5, delta_x: 0.0, delta_y: -2.5, phase: GesturePhase::Changed },
         ];
 
         for event in &events {

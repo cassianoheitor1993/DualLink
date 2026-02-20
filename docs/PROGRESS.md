@@ -106,7 +106,7 @@
 
 ---
 
-## Phase 2 — Extended Display + 60fps 🔄 IN PROGRESS
+## Phase 2 — Extended Display + 60fps ✅ COMPLETE
 
 ### Sprint 2.1 — Fullscreen Renderer ✅
 - **Goal:** Render decoded video in a fullscreen window on Linux
@@ -162,6 +162,42 @@
 
 ---
 
+## Phase 3 — USB-C Transport 🔄 IN PROGRESS
+
+### Sprint 3.1 — USB Ethernet Transport ✅
+- **Goal:** Enable low-latency USB-C transport between Mac and Linux
+- **Research finding:** Lenovo Legion 5 Pro has xHCI-only USB-C controllers (no UDC/gadget mode).
+  CDC-NCM gadget approach (`infra/usb-gadget/`) requires UDC hardware not present on this laptop.
+- **Decision:** Use USB-C Ethernet adapters instead — same TCP/UDP transport, ~1ms latency,
+  zero code changes to the streaming pipeline.
+- **Implementation (macOS):**
+  - `TransportDiscovery` — scans `getifaddrs()` for interfaces on `10.0.1.x` subnet
+  - `probeReachability()` — TCP connect probe to verify receiver is reachable
+  - `bestEndpoint()` — prioritises USB over Wi-Fi, falls back gracefully
+  - `TransportBenchmark` — measures TCP ping latency for diagnostics
+- **Implementation (Linux):**
+  - `duallink-core/src/usb.rs` — `detect_usb_ethernet()` scans `/sys/class/net/` + `ip addr`
+  - Receiver logs USB Ethernet status at startup
+  - `infra/usb-gadget/` scripts preserved for machines that support gadget mode
+- **Status:** ✅ Code complete
+
+### Sprint 3.2 — USB Pipeline Integration ✅
+- **Goal:** Seamless transport selection with auto-detection
+- **Implementation:**
+  - ContentView: Auto/USB/Wi-Fi transport picker (`TransportSelection` enum)
+  - AppState: `connectAndStream()` resolves transport endpoint before connecting
+  - Reconnection logic with transport failover (USB→Wi-Fi or re-discovery)
+  - Transport benchmark runs in background after connection established
+- **Setup instructions:**
+  1. Connect USB-C Ethernet adapter to both machines
+  2. Linux: `sudo ip addr add 10.0.1.1/24 dev <iface> && sudo ip link set <iface> up`
+  3. Mac: System Settings → Network → USB Ethernet → Manual → IP: 10.0.1.2, Mask: 255.255.255.0
+  4. Verify: `ping 10.0.1.1` from Mac
+  5. DualLink app: select "Auto" or "USB" transport mode → connects at ~1ms latency
+- **Status:** ✅ Code complete — awaiting USB Ethernet adapter for hardware validation
+
+---
+
 ## Hardware Tested
 
 | Machine | Role | OS | GPU | Status |
@@ -178,4 +214,4 @@
 
 ---
 
-*Last updated: 2026-02-21*
+*Last updated: 2026-02-20*

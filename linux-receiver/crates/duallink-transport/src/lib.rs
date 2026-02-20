@@ -67,6 +67,11 @@ pub struct TlsIdentity {
 
 /// Generate a self-signed TLS certificate and return a TlsAcceptor.
 pub fn generate_tls_identity() -> anyhow::Result<TlsIdentity> {
+    // Install the ring crypto provider as the process-level default.
+    // This is required by rustls 0.23+ before any ServerConfig is built.
+    // `install_default` fails if already installed — we ignore that error.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     let subject_alt_names = vec![
         "duallink.local".to_string(),
         "localhost".to_string(),

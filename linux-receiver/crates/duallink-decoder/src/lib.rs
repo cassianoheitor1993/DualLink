@@ -86,9 +86,9 @@ impl GStreamerDecoder {
             .and_then(|element| element.downcast::<AppSink>().ok())
             .ok_or_else(|| DecoderError::GStreamerPipeline("No appsink".into()))?;
 
-        // Let h264parse auto-detect whether input is AVCC or AnnexB
+        // Mac sends Annex-B (start-code prefixed) with SPS/PPS on keyframes
         let src_caps = gst::Caps::builder("video/x-h264")
-            .field("stream-format", "avc")
+            .field("stream-format", "byte-stream")
             .field("alignment", "au")
             .build();
         appsrc.set_caps(Some(&src_caps));
@@ -101,10 +101,11 @@ impl GStreamerDecoder {
         Ok(Self { pipeline, appsrc, appsink, element, width, height })
     }
 
-    /// Decode one encoded frame synchronously. Returns raw BGRA pixels.
+    /// Push one encoded frame into the pipeline. Returns None while pipeline fills.
     pub fn decode_frame(&self, frame: EncodedFrame) -> Result<DecodedFrame, DecoderError> {
         // Allocate GStreamer buffer and copy NAL data
-        let mut gst_buf = gst::Buffer::with_size(frame.data.len())
+        let data_len = frame.data.len();
+        let mut gst_buf = gst::Buffer::with_size(data_len)
             .map_err(|_| DecoderError::DecodeFailed { reason: "alloc failed".into() })?;
         {
             let br = gst_buf.get_mut().unwrap();
@@ -117,10 +118,10 @@ impl GStreamerDecoder {
         self.appsrc.push_buffer(gst_buf)
             .map_err(|_| DecoderError::DecodeFailed { reason: "appsrc push failed".into() })?;
 
-        // Pull decoded sample (100ms timeout)
+        // Pull decoded sample (500ms timeout — decoder pipeline needs a few frames to fill)
         let sample = self.appsink
-            .try_pull_sample(gst::ClockTime::from_mseconds(100))
-            .ok_or_else(|| DecoderError::DecodeFailed { reason: "appsink timeout".into() })?;
+            .try_pull_sample(gst::ClockTime::from_mseconds(500))
+            .ok_or_else(|| DecoderError::DecodeFailed { reason: format!("appsink timeout (pushed {} bytes)", data_len) })?;
 
         let buffer = sample.buffer_owned()
             .ok_or_else(|| DecoderError::DecodeFailed { reason: "no buffer in sample".into() })?;

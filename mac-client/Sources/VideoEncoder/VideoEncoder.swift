@@ -135,9 +135,17 @@ public final class VideoEncoder: @unchecked Sendable {
         ]
 
         if config.lowLatencyMode {
-            // Desabilitar delay de lookahead do encoder
-            properties[kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration] =
-                CMTime(seconds: 2, preferredTimescale: 600) as AnyObject
+            // MaxKeyFrameIntervalDuration takes a CFNumber (seconds), not CMTime.
+            // Not supported by all HW encoders — treat as non-fatal.
+            let status = VTSessionSetProperty(
+                session,
+                key: kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration,
+                value: NSNumber(value: 2.0)
+            )
+            if status != noErr {
+                // -17281 = kVTPropertyNotSupportedErr — safe to ignore on some HW encoders
+                print("[VideoEncoder] MaxKeyFrameIntervalDuration not supported (status \(status)), skipping")
+            }
         }
 
         for (key, value) in properties {

@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=DualLink Receiver
+GenericName=Display Receiver
+Comment=Accept macOS screen extension over Wi-Fi or USB-C
+Exec=duallink-receiver
+Icon=duallink-receiver
+Terminal=true
+Categories=Utility;Network;
+Keywords=display;screen;mirror;extend;macos;linux;
+StartupNotify=true

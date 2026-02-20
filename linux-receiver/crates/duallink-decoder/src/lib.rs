@@ -214,6 +214,17 @@ impl GStreamerDisplayDecoder {
             .build();
         appsrc.set_caps(Some(&src_caps));
 
+        // autovideosink is a GstBin — by default message-forward=false,
+        // which swallows Element messages (including GstNavigation) from the
+        // inner sink.  We MUST enable forwarding so poll_input_events() can
+        // read navigation messages from the pipeline bus.
+        if let Some(videosink) = pipeline.by_name("videosink") {
+            videosink.set_property("message-forward", true);
+            info!("Enabled message-forward on autovideosink for navigation events");
+        } else {
+            warn!("Could not find 'videosink' element — input events may not work");
+        }
+
         pipeline
             .set_state(gst::State::Playing)
             .map_err(|_| DecoderError::GStreamerPipeline("Failed to start display pipeline".into()))?;
@@ -272,12 +283,30 @@ impl GStreamerDisplayDecoder {
 
         // Drain all pending messages
         while let Some(msg) = bus.pop() {
-            if let gst::MessageView::Element(elem) = msg.view() {
-                if let Some(s) = elem.structure() {
-                    if let Some(ev) = self.parse_navigation_event(s) {
-                        events.push(ev);
+            match msg.view() {
+                gst::MessageView::Element(elem) => {
+                    if let Some(s) = elem.structure() {
+                        // autovideosink with message-forward=true wraps child
+                        // messages in a "GstBinForwarded" structure.  Unwrap it.
+                        if s.name() == "GstBinForwarded" {
+                            if let Ok(fwd_msg) = s.get::<gst::Message>("message") {
+                                if let gst::MessageView::Element(inner) = fwd_msg.view() {
+                                    if let Some(inner_s) = inner.structure() {
+                                        if let Some(ev) = self.parse_navigation_event(inner_s) {
+                                            events.push(ev);
+                                        }
+                                    }
+                                }
+                            }
+                        } else if let Some(ev) = self.parse_navigation_event(s) {
+                            events.push(ev);
+                        }
                     }
                 }
+                gst::MessageView::Error(err) => {
+                    warn!("GStreamer pipeline error: {}", err.error());
+                }
+                _ => {}
             }
         }
         events

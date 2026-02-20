@@ -29,6 +29,16 @@ public enum ConnectionMode: String, Codable, Sendable {
     case usb
 }
 
+// MARK: - DisplayMode
+
+/// Whether DualLink mirrors the main screen or extends the desktop.
+public enum DisplayMode: String, Codable, Sendable {
+    /// Mirror: capture the main display and stream it (no virtual display needed).
+    case mirror
+    /// Extend: create a virtual display and stream it as a second screen.
+    case extend
+}
+
 // MARK: - StreamConfig
 
 /// Configuração de stream de vídeo.

@@ -8,6 +8,7 @@ struct ContentView: View {
     @EnvironmentObject var appState: AppState
     @State private var receiverHost: String = "10.0.0.59"
     @State private var use60fps: Bool = true
+    @State private var displayMode: DisplayMode = .extend
 
     var body: some View {
         VStack(spacing: 0) {
@@ -16,10 +17,10 @@ struct ContentView: View {
             StatusView()
             Divider()
             if !appState.connectionState.isActive {
-                ConnectView(receiverHost: $receiverHost, use60fps: $use60fps)
+                ConnectView(receiverHost: $receiverHost, use60fps: $use60fps, displayMode: $displayMode)
                 Divider()
             }
-            ControlsView(receiverHost: receiverHost, use60fps: use60fps)
+            ControlsView(receiverHost: receiverHost, use60fps: use60fps, displayMode: displayMode)
         }
         .frame(width: 380)
         .background(.ultraThinMaterial)
@@ -38,6 +39,7 @@ struct ContentView: View {
 private struct ConnectView: View {
     @Binding var receiverHost: String
     @Binding var use60fps: Bool
+    @Binding var displayMode: DisplayMode
     @FocusState private var isFocused: Bool
 
     var body: some View {
@@ -50,6 +52,18 @@ private struct ConnectView: View {
                 .font(.system(.body, design: .monospaced))
                 .focused($isFocused)
                 .onAppear { isFocused = true }
+
+            // Display mode picker
+            HStack(spacing: 8) {
+                Image(systemName: displayMode == .extend ? "display.2" : "rectangle.on.rectangle")
+                    .foregroundStyle(.blue)
+                Picker("", selection: $displayMode) {
+                    Text("Extend Display").tag(DisplayMode.extend)
+                    Text("Mirror Display").tag(DisplayMode.mirror)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            }
 
             Toggle(isOn: $use60fps) {
                 HStack(spacing: 4) {
@@ -79,7 +93,7 @@ private struct HeaderView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("DualLink")
                     .font(.headline)
-                Text("Screen Mirroring")
+                Text("Wireless Display")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -140,6 +154,7 @@ private struct StatusView: View {
         VStack(alignment: .leading, spacing: 8) {
             if case .streaming(let session) = appState.connectionState {
                 StreamingStatusRow(label: "Connected to", value: session.peer.name)
+                StreamingStatusRow(label: "Mode", value: session.connectionMode == .wifi ? "Wi-Fi" : "USB")
                 StreamingStatusRow(label: "Resolution", value: "\(session.config.resolution.width)×\(session.config.resolution.height)")
                 StreamingStatusRow(label: "FPS", value: String(format: "%.0f", appState.streamFPS))
                 StreamingStatusRow(label: "Frames sent", value: "\(appState.framesSent)")
@@ -202,6 +217,7 @@ private struct ControlsView: View {
     @EnvironmentObject var appState: AppState
     let receiverHost: String
     let use60fps: Bool
+    let displayMode: DisplayMode
 
     var body: some View {
         HStack(spacing: 8) {
@@ -218,9 +234,10 @@ private struct ControlsView: View {
                 Button {
                     guard !receiverHost.isEmpty else { return }
                     let config = use60fps ? StreamConfig.highPerformance : StreamConfig.default
-                    Task { await appState.connectAndStream(to: receiverHost, config: config) }
+                    Task { await appState.connectAndStream(to: receiverHost, config: config, displayMode: displayMode) }
                 } label: {
-                    Label("Start Mirroring", systemImage: "play.fill")
+                    let label = displayMode == .extend ? "Start Extending" : "Start Mirroring"
+                    Label(label, systemImage: "play.fill")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)

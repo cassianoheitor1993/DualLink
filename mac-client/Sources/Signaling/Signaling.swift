@@ -299,8 +299,12 @@ public actor SignalingClient {
             let jsonData = receiveBuffer[4 ..< totalNeeded]
             receiveBuffer.removeFirst(totalNeeded)
 
-            if let message = try? JSONDecoder().decode(SignalingMessage.self, from: jsonData) {
+            do {
+                let message = try JSONDecoder().decode(SignalingMessage.self, from: jsonData)
                 handleMessage(message)
+            } catch {
+                let preview = String(data: jsonData.prefix(200), encoding: .utf8) ?? "<binary>"
+                print("[Signaling] Failed to decode message: \(error) — json: \(preview)")
             }
         }
     }

@@ -63,7 +63,8 @@ final class AppState: ObservableObject {
     /// - Parameters:
     ///   - host: IP address of the Linux receiver.
     ///   - config: Stream parameters.
-    func connectAndStream(to host: String, config: StreamConfig = .default) async {
+    ///   - displayMode: Mirror (capture main screen) or Extend (create virtual display).
+    func connectAndStream(to host: String, config: StreamConfig = .default, displayMode: DisplayMode = .extend) async {
         guard case .idle = connectionState else { return }
         lastError = nil
         sessionID = UUID().uuidString
@@ -89,20 +90,34 @@ final class AppState: ObservableObject {
                 },
                 onInputEvent: { [weak self] event in
                     guard let self else { return }
+                    print("[DualLink] Input event received: \(event)")
                     self.inputInjector.inject(event: event)
                 }
             )
             try await signalingClient.connect(host: host)
 
-            // ── 2. Create Virtual Display ────────────────────────────────────
-            try await virtualDisplayManager.create(
-                resolution: config.resolution,
-                refreshRate: config.targetFPS
-            )
-            guard let virtualDisplayID = virtualDisplayManager.activeDisplayID else {
-                throw DualLinkError.streamError("Virtual display ID unavailable")
+            // ── 2. Display setup (depends on mode) ───────────────────────────
+            let captureID: CGDirectDisplayID
+            switch displayMode {
+            case .extend:
+                // Create virtual display and capture it (screen extension)
+                try await virtualDisplayManager.create(
+                    resolution: config.resolution,
+                    refreshRate: config.targetFPS
+                )
+                guard let virtualDisplayID = virtualDisplayManager.activeDisplayID else {
+                    throw DualLinkError.streamError("Virtual display ID unavailable")
+                }
+                captureID = virtualDisplayID
+                inputInjector.configure(displayID: virtualDisplayID)
+                print("[DualLink] Extend mode: capturing virtual display \(virtualDisplayID)")
+
+            case .mirror:
+                // No virtual display needed — capture the main screen directly
+                captureID = CGMainDisplayID()
+                inputInjector.configure(displayID: captureID)
+                print("[DualLink] Mirror mode: capturing main display \(captureID)")
             }
-            inputInjector.configure(displayID: virtualDisplayID)
 
             // ── 3. Configure Video Encoder ─────────────────────────────────
             try videoEncoder.configure(config: config)
@@ -131,10 +146,6 @@ final class AppState: ObservableObject {
             }
 
             // ── 6. Start Screen Capture ───────────────────────────────────
-            // TODO: capture virtualDisplayID once user starts placing windows on it.
-            // For E2E pipeline test, capturing the main display confirms the full chain.
-            let captureID = CGMainDisplayID()
-            print("[DualLink] Capturing displayID \(captureID) (main display for E2E test)")
             try await screenCaptureManager.startCapture(displayID: captureID, config: config) { [weak self] frame in
                 guard let self else { return }
                 self.videoEncoder.encode(

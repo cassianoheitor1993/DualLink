@@ -1,6 +1,6 @@
 use duallink_core::PeerInfo;
-use mdns_sd::{ServiceBrowser, ServiceDaemon, ServiceEvent};
-use tracing::{debug, info, warn};
+use mdns_sd::{ServiceDaemon, ServiceEvent};
+use tracing::{debug, info};
 
 pub const SERVICE_TYPE: &str = "_duallink._tcp.local.";
 pub const DEFAULT_PORT: u16 = 8443;

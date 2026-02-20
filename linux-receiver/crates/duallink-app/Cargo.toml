@@ -20,8 +20,4 @@ duallink-input = { path = "../duallink-input" }
 tokio.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
-
-tokio.workspace = true
-tracing.workspace = true
 tracing-subscriber.workspace = true
-anyhow.workspace = true

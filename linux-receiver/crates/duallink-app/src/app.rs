@@ -1,5 +1,4 @@
 use anyhow::Result;
-use duallink_core::StreamConfig;
 use duallink_decoder::DecoderFactory;
 use duallink_transport::{DualLinkReceiver, SignalingEvent};
 use tracing::{info, warn};

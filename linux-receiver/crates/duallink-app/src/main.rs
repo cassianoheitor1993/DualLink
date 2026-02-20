@@ -1,6 +1,6 @@
 use anyhow::Result;
-use tracing::{error, info, warn};
-use tracing_subscriber::{fmt, EnvFilter};
+use tracing::{error, info};
+use tracing_subscriber::EnvFilter;
 
 mod app;
 

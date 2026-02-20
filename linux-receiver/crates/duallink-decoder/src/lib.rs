@@ -15,7 +15,7 @@
 //! `h264parse` converts VideoToolbox AVCC (length-prefixed) → AnnexB automatically.
 
 use bytes::Bytes;
-use duallink_core::{DecodedFrame, DecoderError, EncodedFrame, PixelFormat};
+use duallink_core::{errors::DecoderError, DecodedFrame, EncodedFrame, PixelFormat};
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app::{AppSink, AppSrc};
@@ -78,12 +78,12 @@ impl GStreamerDecoder {
 
         let appsrc = pipeline
             .by_name("src")
-            .and_then(|e| e.downcast::<AppSrc>().ok())
+            .and_then(|element| element.downcast::<AppSrc>().ok())
             .ok_or_else(|| DecoderError::GStreamerPipeline("No appsrc".into()))?;
 
         let appsink = pipeline
             .by_name("sink")
-            .and_then(|e| e.downcast::<AppSink>().ok())
+            .and_then(|element| element.downcast::<AppSink>().ok())
             .ok_or_else(|| DecoderError::GStreamerPipeline("No appsink".into()))?;
 
         // Let h264parse auto-detect whether input is AVCC or AnnexB
@@ -126,7 +126,11 @@ impl GStreamerDecoder {
         let map = buffer.map_readable()
             .map_err(|_| DecoderError::DecodeFailed { reason: "read map failed".into() })?;
 
-        let pts = buffer.pts().map(|t| t.useconds()).unwrap_or(frame.timestamp_us);
+        let pts = if let Some(timestamp) = buffer.pts() {
+            timestamp.useconds()
+        } else {
+            frame.timestamp_us
+        };
         let data = Bytes::copy_from_slice(map.as_slice());
 
         Ok(DecodedFrame { data, width: self.width, height: self.height, timestamp_us: pts, format: PixelFormat::Bgra })

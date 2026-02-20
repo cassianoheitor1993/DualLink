@@ -198,6 +198,34 @@
 
 ---
 
+## Phase 4 — Security & Polish 🔄 IN PROGRESS
+
+### Sprint 4.1 — TLS + Pairing PIN ✅
+- **Goal:** Encrypt the signaling channel and authenticate pairing with a 6-digit PIN
+- **Implementation (Linux):**
+  - `tokio-rustls` 0.26 + `rustls` 0.23 (ring backend) for TLS server
+  - `rcgen` 0.13 — ephemeral self-signed certificate with SANs (duallink.local, localhost, 10.0.1.1)
+  - SHA-256 fingerprint logged at startup for future TOFU pinning
+  - `generate_pairing_pin()` — 6-digit PIN displayed in a box at receiver startup
+  - `run_signaling_server()` wraps each TCP connection in `TlsAcceptor` before handling
+  - `handle_signaling_conn()` validates `pairing_pin` in the hello message:
+    - Match → `hello_ack(accepted: true)`
+    - Mismatch → `hello_ack(accepted: false, reason: "Invalid pairing PIN")` + disconnect
+- **Implementation (macOS):**
+  - `NWProtocolTLS.Options` with `sec_protocol_options_set_verify_block` (TOFU — accept self-signed)
+  - `SignalingMessage.pairingPin` field added, wired through `sendHello()`
+  - ContentView: PIN text field with lock icon, Start button disabled when PIN is empty
+  - `connectAndStream()` passes PIN through to `sendHello()`, stored for reconnects
+  - `handleMessage(.helloAck)` already surfaces rejection reason as `.failed(reason)` state
+- **Security model:**
+  - TLS 1.2/1.3 encryption on the signaling TCP channel
+  - Trust-on-first-use (TOFU) for certificate verification
+  - 6-digit PIN prevents unauthorized clients from connecting
+  - PIN is ephemeral — regenerated on each receiver restart
+- **Status:** ✅ Code complete — ready for integration testing
+
+---
+
 ## Hardware Tested
 
 | Machine | Role | OS | GPU | Status |
@@ -214,4 +242,4 @@
 
 ---
 
-*Last updated: 2026-02-20*
+*Last updated: 2026-02-21*

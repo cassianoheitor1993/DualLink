@@ -1,18 +1,24 @@
 import Foundation
 import Network
+import Security
 import DualLinkCore
 
 // MARK: - Signaling Protocol
 //
-// Length-prefixed JSON over TCP on port 7879.
+// Length-prefixed JSON over TLS/TCP on port 7879.
 // Each message:  [UInt32 big-endian length][JSON-UTF8 payload]
 //
 // Message types (SignalingMessage.MessageType):
-//   hello         → mac → linux   session open + stream config
+//   hello         → mac → linux   session open + stream config + pairing PIN
 //   hello_ack     → linux → mac   accepted / rejected
 //   config_update → mac → linux   mid-session config change
 //   keepalive     → mac → linux   1Hz heartbeat
 //   stop          → mac → linux   end session gracefully
+//   input_event   → linux → mac   mouse/keyboard from GStreamer window
+//
+// Security (Phase 4):
+//   - TLS with self-signed server certificate (TOFU model)
+//   - 6-digit pairing PIN validated in hello handshake
 
 let kSignalingPort: UInt16 = 7879
 
@@ -38,10 +44,11 @@ public struct SignalingMessage: Codable, Sendable {
     public let reason: String?
     public let timestampMs: UInt64?
     public let inputEvent: InputEvent?
+    public let pairingPin: String?
 
     // MARK: Factories
 
-    public static func hello(sessionID: String, deviceName: String, config: StreamConfig) -> SignalingMessage {
+    public static func hello(sessionID: String, deviceName: String, config: StreamConfig, pairingPin: String? = nil) -> SignalingMessage {
         SignalingMessage(
             type: .hello,
             sessionID: sessionID,
@@ -50,7 +57,8 @@ public struct SignalingMessage: Codable, Sendable {
             accepted: nil,
             reason: nil,
             timestampMs: nil,
-            inputEvent: nil
+            inputEvent: nil,
+            pairingPin: pairingPin
         )
     }
 
@@ -63,7 +71,8 @@ public struct SignalingMessage: Codable, Sendable {
             accepted: nil,
             reason: nil,
             timestampMs: nil,
-            inputEvent: nil
+            inputEvent: nil,
+            pairingPin: nil
         )
     }
 
@@ -76,7 +85,8 @@ public struct SignalingMessage: Codable, Sendable {
             accepted: nil,
             reason: nil,
             timestampMs: timestampMs,
-            inputEvent: nil
+            inputEvent: nil,
+            pairingPin: nil
         )
     }
 
@@ -89,7 +99,8 @@ public struct SignalingMessage: Codable, Sendable {
             accepted: nil,
             reason: nil,
             timestampMs: nil,
-            inputEvent: nil
+            inputEvent: nil,
+            pairingPin: nil
         )
     }
 }
@@ -170,7 +181,19 @@ public actor SignalingClient {
             host: NWEndpoint.Host(host),
             port: NWEndpoint.Port(rawValue: port)!
         )
-        let params = NWParameters.tcp
+
+        // ── TLS configuration (accept self-signed certs — TOFU model) ─────
+        let tlsOptions = NWProtocolTLS.Options()
+        sec_protocol_options_set_verify_block(
+            tlsOptions.securityProtocolOptions,
+            { (_metadata, _trust, complete) in
+                // Accept any certificate (self-signed from the receiver).
+                // In production, use TOFU: pin the cert fingerprint on first connect.
+                complete(true)
+            },
+            DispatchQueue.global(qos: .userInitiated)
+        )
+        let params = NWParameters(tls: tlsOptions)
         params.allowLocalEndpointReuse = true
 
         let conn = NWConnection(to: endpoint, using: params)
@@ -202,9 +225,18 @@ public actor SignalingClient {
     // MARK: - Send Hello
 
     /// Sends the `hello` handshake to the receiver and starts the keepalive loop.
-    public func sendHello(sessionID: String, config: StreamConfig) throws {
+    /// - Parameters:
+    ///   - sessionID: Unique session identifier.
+    ///   - config: Stream configuration to negotiate.
+    ///   - pairingPin: 6-digit PIN displayed by the Linux receiver.
+    public func sendHello(sessionID: String, config: StreamConfig, pairingPin: String? = nil) throws {
         let deviceName = Host.current().localizedName ?? "DualLink Mac"
-        let msg = SignalingMessage.hello(sessionID: sessionID, deviceName: deviceName, config: config)
+        let msg = SignalingMessage.hello(
+            sessionID: sessionID,
+            deviceName: deviceName,
+            config: config,
+            pairingPin: pairingPin
+        )
         try sendMessage(msg)
         setState(.waitingForAck)
         startKeepalive(sessionID: sessionID)

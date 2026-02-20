@@ -1,4 +1,4 @@
-//! duallink-transport — Sprint 1.4
+//! duallink-transport — Phase 4 (TLS-secured signaling)
 //!
 //! Receives video and control data from the macOS DualLink client.
 //!
@@ -8,7 +8,7 @@
 //! macOS                          Linux (this crate)
 //! ──────────────────────────     ──────────────────────────────────
 //! VideoSender  ──UDP:7878──►  UdpReceiver → FrameReassembler ──►  EncodedFrame channel
-//! SignalingClient ─TCP:7879─►  SignalingServer              ──►  SignalingEvent channel
+//! SignalingClient ─TLS:7879─►  SignalingServer (TLS)         ──►  SignalingEvent channel
 //! ```
 //!
 //! # DualLink UDP Frame Protocol v1 (matches Streaming.swift)
@@ -24,13 +24,17 @@
 //! [20..]   payload    [u8]     H.264 NAL unit slice
 //! ```
 //!
-//! # Signaling Protocol v1 (matches Signaling.swift)
+//! # Signaling Protocol v2 (TLS-secured, matches Signaling.swift)
 //!
-//! Length-prefixed JSON over TCP:
+//! Length-prefixed JSON over TLS/TCP:
 //! ```text
 //! [0..4]  length  u32 BE  byte length of JSON payload
 //! [4..]   json    UTF-8   SignalingMessage
 //! ```
+//!
+//! The server generates an ephemeral self-signed certificate at startup.
+//! The certificate's SHA-256 fingerprint is displayed alongside a 6-digit
+//! pairing PIN that the Mac client must include in its `hello` message.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -39,16 +43,136 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use duallink_core::{EncodedFrame, InputEvent, StreamConfig, VideoCodec};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, UdpSocket};
 use tokio::sync::mpsc;
+use tokio_rustls::TlsAcceptor;
 use tracing::{debug, info, warn};
 
 // ── Ports ──────────────────────────────────────────────────────────────────────
 
 pub const VIDEO_PORT: u16 = 7878;
 pub const SIGNALING_PORT: u16 = 7879;
+
+// ── TLS certificate generation ─────────────────────────────────────────────────
+
+/// Ephemeral TLS identity generated at server startup.
+pub struct TlsIdentity {
+    pub acceptor: TlsAcceptor,
+    /// SHA-256 fingerprint of the certificate (hex-encoded, colon-separated).
+    pub fingerprint: String,
+}
+
+/// Generate a self-signed TLS certificate and return a TlsAcceptor.
+pub fn generate_tls_identity() -> anyhow::Result<TlsIdentity> {
+    let subject_alt_names = vec![
+        "duallink.local".to_string(),
+        "localhost".to_string(),
+        "10.0.1.1".to_string(),
+    ];
+    let key_pair = rcgen::KeyPair::generate()?;
+    let cert_params = rcgen::CertificateParams::new(subject_alt_names)?;
+    let cert = cert_params.self_signed(&key_pair)?;
+
+    let cert_der = CertificateDer::from(cert.der().to_vec());
+    let key_der = PrivateKeyDer::try_from(key_pair.serialize_der())
+        .map_err(|e| anyhow::anyhow!("Failed to serialise private key: {}", e))?;
+
+    // Compute SHA-256 fingerprint
+    use std::fmt::Write;
+    let digest = sha256_digest(cert_der.as_ref());
+    let mut fingerprint = String::with_capacity(3 * digest.len());
+    for (i, byte) in digest.iter().enumerate() {
+        if i > 0 { fingerprint.push(':'); }
+        write!(fingerprint, "{:02X}", byte).unwrap();
+    }
+
+    let server_config = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert_der], key_der)?;
+
+    let acceptor = TlsAcceptor::from(Arc::new(server_config));
+
+    Ok(TlsIdentity { acceptor, fingerprint })
+}
+
+/// SHA-256 digest (no external dep — using built-in implementation).
+fn sha256_digest(data: &[u8]) -> [u8; 32] {
+    sha2_256(data)
+}
+
+/// Minimal SHA-256 implementation (FIPS 180-4).
+/// Used only for certificate fingerprint display — not security-critical path.
+fn sha2_256(data: &[u8]) -> [u8; 32] {
+    const K: [u32; 64] = [
+        0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+        0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+        0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+        0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+        0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+        0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+        0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+        0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2,
+    ];
+
+    let mut h: [u32; 8] = [
+        0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19,
+    ];
+
+    // Pre-processing: padding
+    let bit_len = (data.len() as u64) * 8;
+    let mut msg = data.to_vec();
+    msg.push(0x80);
+    while (msg.len() % 64) != 56 { msg.push(0); }
+    msg.extend_from_slice(&bit_len.to_be_bytes());
+
+    // Process each 512-bit block
+    for chunk in msg.chunks_exact(64) {
+        let mut w = [0u32; 64];
+        for i in 0..16 {
+            w[i] = u32::from_be_bytes(chunk[i*4..i*4+4].try_into().unwrap());
+        }
+        for i in 16..64 {
+            let s0 = w[i-15].rotate_right(7) ^ w[i-15].rotate_right(18) ^ (w[i-15] >> 3);
+            let s1 = w[i-2].rotate_right(17) ^ w[i-2].rotate_right(19) ^ (w[i-2] >> 10);
+            w[i] = w[i-16].wrapping_add(s0).wrapping_add(w[i-7]).wrapping_add(s1);
+        }
+
+        let [mut a,mut b,mut c,mut d,mut e,mut f,mut g,mut hh] = h;
+        for i in 0..64 {
+            let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+            let ch = (e & f) ^ ((!e) & g);
+            let t1 = hh.wrapping_add(s1).wrapping_add(ch).wrapping_add(K[i]).wrapping_add(w[i]);
+            let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+            let maj = (a & b) ^ (a & c) ^ (b & c);
+            let t2 = s0.wrapping_add(maj);
+            hh = g; g = f; f = e; e = d.wrapping_add(t1);
+            d = c; c = b; b = a; a = t1.wrapping_add(t2);
+        }
+        h[0] = h[0].wrapping_add(a); h[1] = h[1].wrapping_add(b);
+        h[2] = h[2].wrapping_add(c); h[3] = h[3].wrapping_add(d);
+        h[4] = h[4].wrapping_add(e); h[5] = h[5].wrapping_add(f);
+        h[6] = h[6].wrapping_add(g); h[7] = h[7].wrapping_add(hh);
+    }
+
+    let mut out = [0u8; 32];
+    for (i, val) in h.iter().enumerate() {
+        out[i*4..i*4+4].copy_from_slice(&val.to_be_bytes());
+    }
+    out
+}
+
+/// Generate a random 6-digit pairing PIN.
+pub fn generate_pairing_pin() -> String {
+    use std::time::SystemTime;
+    let seed = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos();
+    format!("{:06}", seed % 1_000_000)
+}
 
 // ── Protocol constants ─────────────────────────────────────────────────────────
 
@@ -204,6 +328,8 @@ struct SignalingMessage {
     timestamp_ms: Option<u64>,
     #[serde(rename = "inputEvent", skip_serializing_if = "Option::is_none")]
     input_event: Option<InputEvent>,
+    #[serde(rename = "pairingPin", skip_serializing_if = "Option::is_none")]
+    pairing_pin: Option<String>,
 }
 
 impl SignalingMessage {
@@ -217,6 +343,7 @@ impl SignalingMessage {
             reason,
             timestamp_ms: None,
             input_event: None,
+            pairing_pin: None,
         }
     }
 
@@ -230,6 +357,7 @@ impl SignalingMessage {
             reason: None,
             timestamp_ms: None,
             input_event: Some(event),
+            pairing_pin: None,
         }
     }
 }
@@ -290,8 +418,11 @@ pub struct DualLinkReceiver {
 }
 
 impl DualLinkReceiver {
-    /// Bind UDP:7878 + TCP:7879 and start background Tokio tasks.
+    /// Bind UDP:7878 + TLS/TCP:7879 and start background Tokio tasks.
     /// Returns an `InputSender` in addition to the frame/event channels.
+    ///
+    /// Generates an ephemeral self-signed TLS certificate and a 6-digit
+    /// pairing PIN.  Both are printed to the console for the user.
     pub async fn start() -> anyhow::Result<(
         Self,
         mpsc::Receiver<EncodedFrame>,
@@ -303,16 +434,28 @@ impl DualLinkReceiver {
         let (input_tx, input_rx) = mpsc::channel::<InputEvent>(256);
         let counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
+        // ── Generate TLS identity ──────────────────────────────────────────
+        let identity = generate_tls_identity()?;
+        info!("TLS certificate fingerprint: {}", identity.fingerprint);
+
+        let pairing_pin = generate_pairing_pin();
+        info!("╔══════════════════════════════════════╗");
+        info!("║  DualLink Pairing PIN:  {}        ║", pairing_pin);
+        info!("╚══════════════════════════════════════╝");
+
+        let acceptor = identity.acceptor;
+        let pin = pairing_pin;
+
         // UDP receiver task
         let udp = UdpSocket::bind(format!("0.0.0.0:{VIDEO_PORT}")).await?;
         info!("UDP video receiver bound on 0.0.0.0:{VIDEO_PORT}");
         let counter_clone = Arc::clone(&counter);
         tokio::spawn(async move { run_udp_receiver(udp, frame_tx, counter_clone).await });
 
-        // TCP signaling task
+        // TLS signaling task
         let tcp = TcpListener::bind(format!("0.0.0.0:{SIGNALING_PORT}")).await?;
-        info!("TCP signaling listener bound on 0.0.0.0:{SIGNALING_PORT}");
-        tokio::spawn(async move { run_signaling_server(tcp, event_tx, input_rx).await });
+        info!("TLS signaling listener bound on 0.0.0.0:{SIGNALING_PORT}");
+        tokio::spawn(async move { run_signaling_server(tcp, event_tx, input_rx, acceptor, pin).await });
 
         Ok((Self { frames_received: counter }, frame_rx, event_rx, InputSender { tx: input_tx }))
     }
@@ -355,6 +498,8 @@ async fn run_signaling_server(
     listener: TcpListener,
     event_tx: mpsc::Sender<SignalingEvent>,
     input_rx: mpsc::Receiver<InputEvent>,
+    acceptor: TlsAcceptor,
+    pairing_pin: String,
 ) {
     // We only support one client at a time — the input_rx is moved into the
     // first accepted connection's write task.
@@ -362,10 +507,22 @@ async fn run_signaling_server(
     loop {
         match listener.accept().await {
             Ok((stream, addr)) => {
-                info!("Signaling connection from {}", addr);
-                let tx = event_tx.clone();
-                let irx = Arc::clone(&input_rx);
-                tokio::spawn(async move { handle_signaling_conn(stream, addr, tx, irx).await });
+                info!("TCP connection from {} — performing TLS handshake...", addr);
+                let acc = acceptor.clone();
+                match acc.accept(stream).await {
+                    Ok(tls_stream) => {
+                        info!("TLS handshake OK with {}", addr);
+                        let tx = event_tx.clone();
+                        let irx = Arc::clone(&input_rx);
+                        let pin = pairing_pin.clone();
+                        tokio::spawn(async move {
+                            handle_signaling_conn(tls_stream, addr, tx, irx, pin).await
+                        });
+                    }
+                    Err(e) => {
+                        warn!("TLS handshake failed from {}: {}", addr, e);
+                    }
+                }
             }
             Err(e) => { warn!("TCP accept error: {}", e); }
         }
@@ -373,10 +530,11 @@ async fn run_signaling_server(
 }
 
 async fn handle_signaling_conn(
-    stream: tokio::net::TcpStream,
+    stream: tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
     addr: SocketAddr,
     event_tx: mpsc::Sender<SignalingEvent>,
     input_rx: Arc<tokio::sync::Mutex<mpsc::Receiver<InputEvent>>>,
+    expected_pin: String,
 ) {
     let (reader, writer) = tokio::io::split(stream);
     let writer = Arc::new(tokio::sync::Mutex::new(writer));
@@ -412,6 +570,24 @@ async fn handle_signaling_conn(
                 let device_name = msg.device_name.unwrap_or_else(|| addr.to_string());
                 let config      = msg.config.unwrap_or_default();
                 info!("Hello from '{}' session={}", device_name, session_id);
+
+                // ── Validate pairing PIN ──────────────────────────────────
+                let client_pin = msg.pairing_pin.unwrap_or_default();
+                if client_pin != expected_pin {
+                    warn!("Pairing PIN mismatch from {} — rejecting (got '{}', expected '{}')",
+                          addr, client_pin, expected_pin);
+                    let ack = SignalingMessage::hello_ack(
+                        session_id,
+                        false,
+                        Some("Invalid pairing PIN".into()),
+                    );
+                    {
+                        let mut w = writer_for_reader.lock().await;
+                        let _ = send_msg_split(&mut *w, &ack).await;
+                    }
+                    break;
+                }
+                info!("Pairing PIN accepted from {}", addr);
 
                 // Respond with hello_ack
                 let ack = SignalingMessage::hello_ack(session_id.clone(), true, None);

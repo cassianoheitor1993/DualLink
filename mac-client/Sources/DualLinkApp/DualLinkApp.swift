@@ -65,6 +65,7 @@ final class AppState: ObservableObject {
     private var lastDisplayMode: DisplayMode = .extend
     private var lastTransportMode: TransportSelection = .auto
     private var lastWifiHost: String? = nil
+    private var lastPairingPin: String? = nil
     private var activeConnectionMode: ConnectionMode = .wifi
     private var reconnectAttempt: Int = 0
     private let maxReconnectAttempts: Int = 5
@@ -77,8 +78,10 @@ final class AppState: ObservableObject {
     ///   - displayMode: Mirror (capture main screen) or Extend (create virtual display).
     ///   - transportMode: Auto, USB, or Wi-Fi.
     ///   - wifiHost: Wi-Fi IP of the receiver (needed for Wi-Fi/Auto mode).
+    ///   - pairingPin: 6-digit PIN displayed by the Linux receiver (required for first connect).
     func connectAndStream(config: StreamConfig = .default, displayMode: DisplayMode = .extend,
-                          transportMode: TransportSelection = .auto, wifiHost: String? = nil) async {
+                          transportMode: TransportSelection = .auto, wifiHost: String? = nil,
+                          pairingPin: String? = nil) async {
         guard case .idle = connectionState else { return }
         lastError = nil
         sessionID = UUID().uuidString
@@ -86,6 +89,7 @@ final class AppState: ObservableObject {
         lastDisplayMode = displayMode
         lastTransportMode = transportMode
         lastWifiHost = wifiHost
+        lastPairingPin = pairingPin
         reconnectAttempt = 0
 
         do {
@@ -231,7 +235,7 @@ final class AppState: ObservableObject {
             }
 
             // ── 7. Send Hello handshake ──────────────────────────────────
-            try await signalingClient.sendHello(sessionID: sessionID, config: config)
+            try await signalingClient.sendHello(sessionID: sessionID, config: config, pairingPin: pairingPin)
 
             // ── 8. Update UI state ─────────────────────────────────────────
             connectionState = .streaming(session: SessionInfo(
@@ -345,7 +349,7 @@ final class AppState: ObservableObject {
                 self.videoEncoder.encode(pixelBuffer: frame.pixelBuffer, presentationTime: frame.presentationTime)
             }
 
-            try await signalingClient.sendHello(sessionID: sessionID, config: lastConfig)
+            try await signalingClient.sendHello(sessionID: sessionID, config: lastConfig, pairingPin: lastPairingPin)
 
             reconnectAttempt = 0
             connectionState = .streaming(session: SessionInfo(

@@ -15,6 +15,7 @@ enum TransportSelection: String, CaseIterable {
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
     @State private var receiverHost: String = "10.0.0.59"
+    @State private var pairingPin: String = ""
     @State private var use60fps: Bool = true
     @State private var displayMode: DisplayMode = .extend
     @State private var selectedResolution: Resolution = .fhd
@@ -30,6 +31,7 @@ struct ContentView: View {
             if !appState.connectionState.isActive {
                 ConnectView(
                     receiverHost: $receiverHost,
+                    pairingPin: $pairingPin,
                     use60fps: $use60fps,
                     displayMode: $displayMode,
                     selectedResolution: $selectedResolution,
@@ -40,6 +42,7 @@ struct ContentView: View {
             }
             ControlsView(
                 receiverHost: receiverHost,
+                pairingPin: pairingPin,
                 use60fps: use60fps,
                 displayMode: displayMode,
                 selectedResolution: selectedResolution,
@@ -63,6 +66,7 @@ struct ContentView: View {
 
 private struct ConnectView: View {
     @Binding var receiverHost: String
+    @Binding var pairingPin: String
     @Binding var use60fps: Bool
     @Binding var displayMode: DisplayMode
     @Binding var selectedResolution: Resolution
@@ -95,6 +99,21 @@ private struct ConnectView: View {
                     .font(.system(.body, design: .monospaced))
                     .focused($isFocused)
                     .onAppear { isFocused = true }
+            }
+
+            // Pairing PIN field
+            HStack(spacing: 8) {
+                Image(systemName: "lock.shield")
+                    .foregroundStyle(.blue)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Pairing PIN")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    TextField("6-digit PIN", text: $pairingPin)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(.body, design: .monospaced))
+                        .frame(width: 120)
+                }
             }
 
             // Display mode picker
@@ -285,6 +304,7 @@ private struct StreamingStatusRow: View {
 private struct ControlsView: View {
     @EnvironmentObject var appState: AppState
     let receiverHost: String
+    let pairingPin: String
     let use60fps: Bool
     let displayMode: DisplayMode
     let selectedResolution: Resolution
@@ -307,12 +327,14 @@ private struct ControlsView: View {
                     let fps = use60fps ? 60 : 30
                     let config = StreamConfig.recommended(resolution: selectedResolution, fps: fps, codec: selectedCodec)
                     let wifiHost = transportMode == .usb ? nil : (receiverHost.isEmpty ? nil : receiverHost)
+                    let pin = pairingPin.isEmpty ? nil : pairingPin
                     Task {
                         await appState.connectAndStream(
                             config: config,
                             displayMode: displayMode,
                             transportMode: transportMode,
-                            wifiHost: wifiHost
+                            wifiHost: wifiHost,
+                            pairingPin: pin
                         )
                     }
                 } label: {
@@ -323,6 +345,7 @@ private struct ControlsView: View {
                 .buttonStyle(.borderedProminent)
                 .disabled(
                     (transportMode != .usb && receiverHost.isEmpty) ||
+                    pairingPin.isEmpty ||
                     appState.connectionState == .discovering
                 )
             }

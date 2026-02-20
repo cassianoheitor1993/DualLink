@@ -48,6 +48,12 @@ mdns-sd = "0.10"
 # UUID
 uuid = { version = "1", features = ["v4"] }
 
+# TLS
+tokio-rustls = "0.26"
+rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
+rustls-pemfile = "2"
+rcgen = "0.13"
+
 [profile.release]
 opt-level = 3
 lto = "thin"

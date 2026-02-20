@@ -175,15 +175,25 @@ pub struct GStreamerDisplayDecoder {
 impl GStreamerDisplayDecoder {
     /// Build and start the decode+display pipeline.
     pub fn new(element: &'static str, width: u32, height: u32) -> Result<Self, DecoderError> {
-        // videoconvert + videoscale handle any format/resolution mismatch
-        // between the VA-API decoder output (may be alignment-padded) and
-        // what autovideosink expects.
+        // VA-API decoders output surfaces with alignment-padded heights
+        // (e.g. 1088 instead of 1080).  `videoconvert` can't map those
+        // surfaces properly → "info->height <= meta->height" assertion.
+        //
+        // Fix: for vaapi decoders, use `vaapipostproc` which operates
+        // natively on VA surfaces.  For software decoders, use plain
+        // `videoconvert`.
+        let is_vaapi = element.starts_with("vaapi");
+        let postproc = if is_vaapi {
+            "vaapipostproc".to_string()
+        } else {
+            "videoconvert ! videoscale".to_string()
+        };
+
         let pipeline_str = format!(
             "appsrc name=src format=time is-live=true \
              ! h264parse \
              ! {element} \
-             ! videoconvert \
-             ! videoscale \
+             ! {postproc} \
              ! autovideosink name=videosink sync=false"
         );
 

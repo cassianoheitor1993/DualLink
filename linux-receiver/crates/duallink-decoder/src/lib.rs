@@ -175,10 +175,15 @@ pub struct GStreamerDisplayDecoder {
 impl GStreamerDisplayDecoder {
     /// Build and start the decode+display pipeline.
     pub fn new(element: &'static str, width: u32, height: u32) -> Result<Self, DecoderError> {
+        // videoconvert + videoscale handle any format/resolution mismatch
+        // between the VA-API decoder output (may be alignment-padded) and
+        // what autovideosink expects.
         let pipeline_str = format!(
             "appsrc name=src format=time is-live=true \
              ! h264parse \
              ! {element} \
+             ! videoconvert \
+             ! videoscale \
              ! autovideosink name=videosink sync=false"
         );
 

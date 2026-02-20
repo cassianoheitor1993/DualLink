@@ -1,0 +1,21 @@
+[package]
+name = "duallink-gui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "duallink-gui"
+path = "src/main.rs"
+
+[dependencies]
+eframe    = { workspace = true }
+egui      = { workspace = true }
+tokio     = { workspace = true }
+tracing   = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow    = { workspace = true }
+duallink-transport = { path = "../duallink-transport" }
+duallink-decoder   = { path = "../duallink-decoder"   }
+duallink-core      = { path = "../duallink-core"      }

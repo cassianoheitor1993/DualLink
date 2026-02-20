@@ -367,6 +367,18 @@ impl SignalingMessage {
     }
 }
 
+// ── Public startup info ───────────────────────────────────────────────────────
+
+/// Initial values produced once by [`DualLinkReceiver::start`] that callers
+/// need to display in a UI or log.
+#[derive(Debug, Clone)]
+pub struct StartupInfo {
+    /// 6-digit pairing PIN shown to the user.
+    pub pairing_pin: String,
+    /// Hex SHA-256 fingerprint of the ephemeral TLS cert (for TOFU display).
+    pub tls_fingerprint: String,
+}
+
 // ── Public event type ──────────────────────────────────────────────────────────
 
 /// Events emitted by the SignalingServer to the rest of the app.
@@ -433,6 +445,7 @@ impl DualLinkReceiver {
         mpsc::Receiver<EncodedFrame>,
         mpsc::Receiver<SignalingEvent>,
         InputSender,
+        StartupInfo,
     )> {
         let (frame_tx, frame_rx) = mpsc::channel::<EncodedFrame>(64);
         let (event_tx, event_rx) = mpsc::channel::<SignalingEvent>(16);
@@ -449,7 +462,9 @@ impl DualLinkReceiver {
         info!("╚══════════════════════════════════════╝");
 
         let acceptor = identity.acceptor;
+        let startup_fingerprint = identity.fingerprint.clone();
         let pin = pairing_pin;
+        let startup_pin = pin.clone();
 
         // UDP receiver task
         let udp = UdpSocket::bind(format!("0.0.0.0:{VIDEO_PORT}")).await?;
@@ -462,7 +477,13 @@ impl DualLinkReceiver {
         info!("TLS signaling listener bound on 0.0.0.0:{SIGNALING_PORT}");
         tokio::spawn(async move { run_signaling_server(tcp, event_tx, input_rx, acceptor, pin).await });
 
-        Ok((Self { frames_received: counter }, frame_rx, event_rx, InputSender { tx: input_tx }))
+        Ok((
+            Self { frames_received: counter },
+            frame_rx,
+            event_rx,
+            InputSender { tx: input_tx },
+            StartupInfo { pairing_pin: startup_pin, tls_fingerprint: startup_fingerprint },
+        ))
     }
 }
 

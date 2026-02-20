@@ -30,7 +30,7 @@ pub async fn run() -> Result<()> {
 
     info!("Binding transport (UDP:7878 video, TCP:7879 signaling)...");
 
-    let (_recv, mut frame_rx, mut event_rx, input_sender) = DualLinkReceiver::start().await?;
+    let (_recv, mut frame_rx, mut event_rx, input_sender, _startup) = DualLinkReceiver::start().await?;
 
     info!("Waiting for macOS DualLink client to connect...");
     info!("Enter the IP of this machine in the DualLink mac app and press Start Mirroring.");

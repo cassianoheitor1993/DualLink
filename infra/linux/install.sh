@@ -4,6 +4,7 @@
 set -euo pipefail
 
 BINARY_NAME="duallink-receiver"
+GUI_BINARY_NAME="duallink-gui"
 INSTALL_DIR="/usr/local/bin"
 SERVICE_NAME="duallink-receiver.service"
 SERVICE_SRC="$(dirname "$0")/$SERVICE_NAME"
@@ -15,6 +16,7 @@ REAL_USER="${SUDO_USER:-$USER}"
 REAL_HOME=$(getent passwd "$REAL_USER" | cut -d: -f6)
 SERVICE_DIR="$REAL_HOME/.config/systemd/user"
 CARGO_RELEASE="$(dirname "$0")/../../linux-receiver/target/release/$BINARY_NAME"
+GUI_CARGO_RELEASE="$(dirname "$0")/../../linux-receiver/target/release/$GUI_BINARY_NAME"
 
 # Helper: run a command as the real (non-root) user
 run_as_user() { sudo -u "$REAL_USER" XDG_RUNTIME_DIR="/run/user/$(id -u "$REAL_USER")" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u "$REAL_USER")/bus" "$@"; }
@@ -34,6 +36,7 @@ if [[ "${1:-}" == "--uninstall" ]]; then
     run_as_user systemctl --user daemon-reload
     info "Removing binary..."
     rm -f "$INSTALL_DIR/$BINARY_NAME"
+    rm -f "$INSTALL_DIR/$GUI_BINARY_NAME"
     info "Removing desktop entry and icon..."
     rm -f "$REAL_HOME/.local/share/applications/duallink-receiver.desktop"
     rm -f "$REAL_HOME/.local/share/icons/hicolor/scalable/apps/duallink-receiver.svg"
@@ -43,16 +46,18 @@ if [[ "${1:-}" == "--uninstall" ]]; then
 fi
 
 # ── Build if binary missing ────────────────────────────────────────────────
-if [[ ! -f "$CARGO_RELEASE" ]]; then
-    info "Binary not found — building release..."
-    (cd "$(dirname "$0")/../../linux-receiver" && cargo build --release -p duallink-app)
+if [[ ! -f "$CARGO_RELEASE" ]] || [[ ! -f "$GUI_CARGO_RELEASE" ]]; then
+    info "Building release binaries (duallink-receiver + duallink-gui)..."
+    (cd "$(dirname "$0")/../../linux-receiver" && cargo build --release -p duallink-app -p duallink-gui)
 fi
 
-[[ -f "$CARGO_RELEASE" ]] || error "Build failed — binary not found at $CARGO_RELEASE"
+[[ -f "$CARGO_RELEASE"     ]] || error "Build failed — $CARGO_RELEASE not found"
+[[ -f "$GUI_CARGO_RELEASE" ]] || error "Build failed — $GUI_CARGO_RELEASE not found"
 
-# ── Install binary ─────────────────────────────────────────────────────────
-info "Installing binary to $INSTALL_DIR/$BINARY_NAME..."
-install -m 755 "$CARGO_RELEASE" "$INSTALL_DIR/$BINARY_NAME"
+# ── Install binaries ────────────────────────────────────────────────────────
+info "Installing binaries to $INSTALL_DIR/..."
+install -m 755 "$CARGO_RELEASE"     "$INSTALL_DIR/$BINARY_NAME"
+install -m 755 "$GUI_CARGO_RELEASE" "$INSTALL_DIR/$GUI_BINARY_NAME"
 
 # ── Install systemd user service ───────────────────────────────────────────
 info "Installing systemd user service..."
@@ -85,7 +90,11 @@ run_as_user gtk-update-icon-cache -f -t "$REAL_HOME/.local/share/icons/hicolor" 
 # ── Done ───────────────────────────────────────────────────────────────────
 info "Installation complete!"
 info ""
-info "  Status : systemctl --user status $SERVICE_NAME"
+info "  GUI app: duallink-gui  (launch from app menu or run directly)"
+info "  CLI svc: systemctl --user status $SERVICE_NAME"
 info "  Logs   : journalctl --user -u $SERVICE_NAME -f"
 info "  Stop   : systemctl --user stop $SERVICE_NAME"
 info "  Remove : sudo $0 --uninstall"
+info ""
+info "  NOTE: The GUI and the systemd service both bind UDP:7878 + TCP:7879."
+info "        Stop the service before opening the GUI, or vice-versa."

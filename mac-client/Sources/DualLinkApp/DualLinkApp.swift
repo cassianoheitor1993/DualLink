@@ -88,7 +88,7 @@ final class AppState: ObservableObject {
                 resolution: config.resolution,
                 refreshRate: config.targetFPS
             )
-            guard let displayID = virtualDisplayManager.activeDisplayID else {
+            guard virtualDisplayManager.activeDisplayID != nil else {
                 throw DualLinkError.streamError("Virtual display ID unavailable")
             }
 

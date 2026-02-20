@@ -1,0 +1,18 @@
+[package]
+name = "duallink-decoder"
+description = "H.264/H.265 hardware video decoding via GStreamer (VAAPI/NVDEC)"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+duallink-core = { path = "../duallink-core" }
+tokio.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+bytes.workspace = true
+async-trait.workspace = true
+
+# GStreamer — adicionar quando iniciar Sprint 0.3 / Fase 1
+# gstreamer = "0.22"
+# gstreamer-video = "0.22"
+# gstreamer-app = "0.22"

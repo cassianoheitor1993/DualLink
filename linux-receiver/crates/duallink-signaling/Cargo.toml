@@ -1,0 +1,15 @@
+[package]
+name = "duallink-signaling"
+description = "WebSocket signaling client for WebRTC session negotiation"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+duallink-core = { path = "../duallink-core" }
+tokio.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+# tokio-tungstenite = "0.21"  # WebSocket — Sprint 1.2.5

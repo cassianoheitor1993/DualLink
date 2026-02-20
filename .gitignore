@@ -4,6 +4,7 @@
 
 # macOS
 mac-client/.build/
+poc/**/.build/
 mac-client/DerivedData/
 mac-client/*.xcuserdata/
 mac-client/**/*.xcuserdata/

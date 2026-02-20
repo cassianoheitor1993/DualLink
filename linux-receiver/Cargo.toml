@@ -1,0 +1,55 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/duallink-core",
+    "crates/duallink-decoder",
+    "crates/duallink-renderer",
+    "crates/duallink-transport",
+    "crates/duallink-webrtc",
+    "crates/duallink-signaling",
+    "crates/duallink-discovery",
+    "crates/duallink-input",
+    "crates/duallink-app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["DualLink"]
+license = "MIT"
+rust-version = "1.75"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Error handling
+thiserror = "1"
+anyhow = "1"
+
+# Logging / tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# Serialization
+prost = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Bytes
+bytes = "1"
+
+# Async traits
+async-trait = "0.1"
+
+# mDNS
+mdns-sd = "0.10"
+
+# UUID
+uuid = { version = "1", features = ["v4"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true

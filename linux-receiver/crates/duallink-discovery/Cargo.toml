@@ -1,0 +1,11 @@
+[package]
+name = "duallink-discovery"
+description = "mDNS/Bonjour service discovery"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+duallink-core = { path = "../duallink-core" }
+tokio.workspace = true
+tracing.workspace = true
+mdns-sd.workspace = true

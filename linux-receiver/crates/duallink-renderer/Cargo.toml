@@ -1,0 +1,16 @@
+[package]
+name = "duallink-renderer"
+description = "Fullscreen video rendering for Linux (Wayland/X11)"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+duallink-core = { path = "../duallink-core" }
+tokio.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+async-trait.workspace = true
+
+# wgpu para rendering agnóstico de plataforma — adicionar em Sprint 1.2.4
+# wgpu = { version = "0.19", features = ["vulkan"] }
+# winit = "0.29"

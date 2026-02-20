@@ -1,0 +1,11 @@
+[package]
+name = "duallink-core"
+description = "Core types, errors, and configuration for DualLink"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+bytes.workspace = true

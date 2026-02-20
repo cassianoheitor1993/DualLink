@@ -1,0 +1,12 @@
+[package]
+name = "duallink-input"
+description = "Input capture and forwarding (mouse, keyboard events) to macOS"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+duallink-core = { path = "../duallink-core" }
+tokio.workspace = true
+tracing.workspace = true
+serde.workspace = true
+# evdev = "0.12"  # Linux input events — Sprint 2.3.1

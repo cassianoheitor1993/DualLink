@@ -1,0 +1,210 @@
+import Foundation
+import VideoToolbox
+import CoreMedia
+import CoreVideo
+import DualLinkCore
+
+// MARK: - VideoEncoder
+
+/// Encoda frames de vídeo usando hardware acceleration (VideoToolbox).
+///
+/// Suporta H.264 e H.265, com modo de baixa latência para streaming em tempo real.
+///
+/// ## Uso
+/// ```swift
+/// let encoder = VideoEncoder()
+/// try await encoder.configure(config: .default)
+/// encoder.onEncodedData = { nalUnits in
+///     // enviar via WebRTC / USB
+/// }
+/// encoder.encode(pixelBuffer: frame.pixelBuffer, presentationTime: frame.presentationTime)
+/// ```
+public final class VideoEncoder: @unchecked Sendable {
+
+    // MARK: - Types
+
+    public typealias EncodedDataHandler = @Sendable ([UInt8], CMTime, Bool) -> Void
+
+    // MARK: - State
+
+    public private(set) var isConfigured: Bool = false
+    public private(set) var config: StreamConfig = .default
+
+    /// Callback chamado com cada NAL unit encodada.
+    /// Parâmetros: (nalData, presentationTime, isKeyframe)
+    public var onEncodedData: EncodedDataHandler?
+
+    // MARK: - Private
+
+    private var compressionSession: VTCompressionSession?
+    private let encoderQueue = DispatchQueue(label: "com.duallink.encoder", qos: .userInteractive)
+
+    // MARK: - Init
+
+    public init() {}
+
+    deinit {
+        invalidate()
+    }
+
+    // MARK: - Public API
+
+    /// Configura a sessão de encoding.
+    /// - Parameter config: Configuração de stream (resolução, codec, bitrate, fps).
+    public func configure(config: StreamConfig) throws {
+        invalidate()
+        self.config = config
+
+        let codecType: CMVideoCodecType = config.codec == .h265
+            ? kCMVideoCodecType_HEVC
+            : kCMVideoCodecType_H264
+
+        var session: VTCompressionSession?
+        let status = VTCompressionSessionCreate(
+            allocator: kCFAllocatorDefault,
+            width: Int32(config.resolution.width),
+            height: Int32(config.resolution.height),
+            codecType: codecType,
+            encoderSpecification: nil,
+            imageBufferAttributes: nil,
+            compressedDataAllocator: nil,
+            outputCallback: compressionOutputCallback,
+            refcon: Unmanaged.passUnretained(self).toOpaque(),
+            compressionSessionOut: &session
+        )
+
+        guard status == noErr, let session else {
+            throw VideoEncoderError.sessionCreationFailed(status: status)
+        }
+
+        try applyProperties(to: session, config: config)
+        VTCompressionSessionPrepareToEncodeFrames(session)
+
+        compressionSession = session
+        isConfigured = true
+    }
+
+    /// Encoda um único frame.
+    /// Thread-safe — pode ser chamado de qualquer thread.
+    public func encode(pixelBuffer: CVPixelBuffer, presentationTime: CMTime) {
+        guard let session = compressionSession else { return }
+
+        // Frame properties — forçar keyframe a cada N segundos é gerenciado pelo MaxKeyFrameInterval
+        let frameProperties: CFDictionary? = nil
+
+        // PERF: VTCompressionSessionEncodeFrame é não-bloqueante com o output callback configurado
+        VTCompressionSessionEncodeFrame(
+            session,
+            imageBuffer: pixelBuffer,
+            presentationTimeStamp: presentationTime,
+            duration: CMTime(value: 1, timescale: CMTimeScale(config.targetFPS)),
+            frameProperties: frameProperties,
+            infoFlagsOut: nil,
+            outputHandler: nil
+        )
+    }
+
+    /// Para o encoding e libera recursos.
+    public func invalidate() {
+        guard let session = compressionSession else { return }
+        VTCompressionSessionInvalidate(session)
+        compressionSession = nil
+        isConfigured = false
+    }
+
+    // MARK: - Private Helpers
+
+    private func applyProperties(to session: VTCompressionSession, config: StreamConfig) throws {
+        var properties: [CFString: Any] = [
+            // Modo real-time — essencial para streaming
+            kVTCompressionPropertyKey_RealTime: kCFBooleanTrue!,
+
+            // Sem B-frames — elimina latência de reordenação
+            kVTCompressionPropertyKey_AllowFrameReordering: kCFBooleanFalse!,
+
+            // Keyframe a cada 2 segundos (permite recovery mais rápido)
+            kVTCompressionPropertyKey_MaxKeyFrameInterval: config.targetFPS * 2,
+
+            // Bitrate médio alvo
+            kVTCompressionPropertyKey_AverageBitRate: config.maxBitrateBps,
+
+            // H.264: usar Baseline para máxima compatibilidade e mínima latência
+            kVTCompressionPropertyKey_ProfileLevel: config.codec == .h264
+                ? kVTProfileLevel_H264_Baseline_AutoLevel
+                : kVTProfileLevel_HEVC_Main_AutoLevel,
+        ]
+
+        if config.lowLatencyMode {
+            // Desabilitar delay de lookahead do encoder
+            properties[kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration] =
+                CMTime(seconds: 2, preferredTimescale: 600) as AnyObject
+        }
+
+        for (key, value) in properties {
+            let status = VTSessionSetProperty(session, key: key, value: value as CFTypeRef)
+            guard status == noErr else {
+                throw VideoEncoderError.propertySetFailed(key: key as String, status: status)
+            }
+        }
+    }
+}
+
+// MARK: - Compression Output Callback
+
+/// Callback chamado pelo VideoToolbox quando um frame é encodado.
+private let compressionOutputCallback: VTCompressionOutputCallback = { refcon, _, status, flags, sampleBuffer in
+    guard status == noErr,
+          let sampleBuffer,
+          let refcon else { return }
+
+    let encoder = Unmanaged<VideoEncoder>.fromOpaque(refcon).takeUnretainedValue()
+    encoder.handleEncodedSampleBuffer(sampleBuffer, flags: flags)
+}
+
+extension VideoEncoder {
+    /// Processa um CMSampleBuffer encodado e extrai NAL units.
+    func handleEncodedSampleBuffer(_ sampleBuffer: CMSampleBuffer, flags: VTEncodeInfoFlags) {
+        let isKeyframe = !flags.contains(.frameDropped)
+            && sampleBuffer.attachments.propagated[.dependsOnOthers] as? Bool != true
+
+        guard let dataBuffer = sampleBuffer.dataBuffer else { return }
+
+        // Extrair bytes do CMBlockBuffer
+        var dataLength = 0
+        var dataPointer: UnsafeMutablePointer<Int8>?
+        let status = CMBlockBufferGetDataPointer(
+            dataBuffer,
+            atOffset: 0,
+            lengthAtOffsetOut: nil,
+            totalLengthOut: &dataLength,
+            dataPointerOut: &dataPointer
+        )
+
+        guard status == noErr, let dataPointer, dataLength > 0 else { return }
+
+        // Converter para array de bytes
+        // PERF: Em produção, usar Bytes para evitar cópia (TODO: migrar para optimization sprint)
+        let nalData = Array(UnsafeBufferPointer(start: UnsafeRawPointer(dataPointer).assumingMemoryBound(to: UInt8.self), count: dataLength))
+
+        onEncodedData?(nalData, sampleBuffer.presentationTimeStamp, isKeyframe)
+    }
+}
+
+// MARK: - VideoEncoderError
+
+public enum VideoEncoderError: LocalizedError {
+    case sessionCreationFailed(status: OSStatus)
+    case propertySetFailed(key: String, status: OSStatus)
+    case notConfigured
+
+    public var errorDescription: String? {
+        switch self {
+        case .sessionCreationFailed(let status):
+            return "VTCompressionSession creation failed with status \(status)"
+        case .propertySetFailed(let key, let status):
+            return "Failed to set encoder property '\(key)': \(status)"
+        case .notConfigured:
+            return "VideoEncoder must be configured before encoding"
+        }
+    }
+}

@@ -1,0 +1,13 @@
+[package]
+name = "duallink-transport"
+description = "Transport layer abstraction (Wi-Fi / USB-C)"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+duallink-core = { path = "../duallink-core" }
+tokio.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+async-trait.workspace = true
+bytes.workspace = true

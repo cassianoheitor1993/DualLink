@@ -120,13 +120,15 @@ public final class ScreenCaptureManager: NSObject, ObservableObject {
         // (macOS 14 SCK stops delivering pixel data on unchanged content).
         let interval = 1.0 / Double(config.targetFPS)
         repeatTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
-            guard let self, let pb = self.lastPixelBuffer else { return }
-            let pts = CMTimeAdd(self.lastPTS, CMTime(seconds: interval, preferredTimescale: 600))
-            self.lastPTS = pts
-            let frame = CapturedFrame(pixelBuffer: pb, presentationTime: pts,
-                                      width: CVPixelBufferGetWidth(pb), height: CVPixelBufferGetHeight(pb))
-            self.updateFPS()
-            self.frameHandler?(frame)
+            Task { @MainActor [weak self] in
+                guard let self, let pb = self.lastPixelBuffer else { return }
+                let pts = CMTimeAdd(self.lastPTS, CMTime(seconds: interval, preferredTimescale: 600))
+                self.lastPTS = pts
+                let frame = CapturedFrame(pixelBuffer: pb, presentationTime: pts,
+                                          width: CVPixelBufferGetWidth(pb), height: CVPixelBufferGetHeight(pb))
+                self.updateFPS()
+                self.frameHandler?(frame)
+            }
         }
     }
 

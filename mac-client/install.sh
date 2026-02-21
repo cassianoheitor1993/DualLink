@@ -26,8 +26,10 @@ printf "APPL????"            > "$BUILD_APP/Contents/PkgInfo"
 ICON="$SCRIPT_DIR/Sources/DualLinkApp/Resources/AppIcon.icns"
 [[ -f "$ICON" ]] && cp "$ICON" "$BUILD_APP/Contents/Resources/AppIcon.icns"
 
-echo "▶  Removing quarantine..."
+echo "▶  Removing quarantine and resource forks..."
 xattr -cr "$BUILD_APP" 2>/dev/null || true
+find "$BUILD_APP" -name '._*' -delete 2>/dev/null || true
+dot_clean -m "$BUILD_APP" 2>/dev/null || true
 
 # Use persistent cert if available (keeps TCC permissions across rebuilds)
 CERT_NAME="DualLink Dev"

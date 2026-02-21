@@ -25,9 +25,11 @@ cp "$INFO_PLIST_SRC" "$CONTENTS/Info.plist"
 # Minimal PkgInfo
 echo -n "APPL????" > "$CONTENTS/PkgInfo"
 
-echo "▶ Removing quarantine..."
+echo "▶ Removing quarantine and resource forks..."
 xattr -cr "$APP_DIR" 2>/dev/null || true
+find "$APP_DIR" -name '._*' -delete 2>/dev/null || true
 find "$APP_DIR" -name "*.DS_Store" -delete 2>/dev/null || true
+dot_clean -m "$APP_DIR" 2>/dev/null || true
 
 # Use persistent cert if available (keeps TCC permissions across rebuilds)
 CERT_NAME="DualLink Dev"

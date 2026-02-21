@@ -29,11 +29,20 @@ ICON="$SCRIPT_DIR/Sources/DualLinkApp/Resources/AppIcon.icns"
 echo "▶  Removing quarantine..."
 xattr -cr "$BUILD_APP" 2>/dev/null || true
 
-echo "▶  Codesigning (ad-hoc)..."
-codesign --force --sign - \
+# Use persistent cert if available (keeps TCC permissions across rebuilds)
+CERT_NAME="DualLink Dev"
+if security find-certificate -c "$CERT_NAME" ~/Library/Keychains/login.keychain-db &>/dev/null; then
+    SIGN_ID="$CERT_NAME"
+else
+    SIGN_ID="-"
+    echo "⚠️  'DualLink Dev' cert not found — using ad-hoc (permissions reset each install)."
+    echo "   Run ./create-signing-cert.sh once to fix this."
+fi
+echo "▶  Codesigning (identity: $SIGN_ID)..."
+codesign --force --sign "$SIGN_ID" \
   --identifier "com.duallink.mac-client" \
   "$BUILD_APP/Contents/MacOS/DualLink"
-codesign --force --sign - \
+codesign --force --sign "$SIGN_ID" \
   --entitlements "$ENTITLEMENTS" \
   --identifier "com.duallink.mac-client" \
   "$BUILD_APP"

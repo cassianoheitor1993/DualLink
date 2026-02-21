@@ -29,12 +29,18 @@ echo "▶ Removing quarantine..."
 xattr -cr "$APP_DIR" 2>/dev/null || true
 find "$APP_DIR" -name "*.DS_Store" -delete 2>/dev/null || true
 
-echo "▶ Codesigning (ad-hoc)..."
-# Sign binary first, then wrap the bundle
-codesign --force --sign - \
+# Use persistent cert if available (keeps TCC permissions across rebuilds)
+CERT_NAME="DualLink Dev"
+if security find-certificate -c "$CERT_NAME" ~/Library/Keychains/login.keychain-db &>/dev/null; then
+    SIGN_ID="$CERT_NAME"
+else
+    SIGN_ID="-"
+fi
+echo "▶ Codesigning (identity: $SIGN_ID)..."
+codesign --force --sign "$SIGN_ID" \
   --identifier "com.duallink.mac-client" \
   "$MACOS/DualLink"
-codesign --force --sign - \
+codesign --force --sign "$SIGN_ID" \
   --entitlements "$ENTITLEMENTS" \
   --identifier "com.duallink.mac-client" \
   "$APP_DIR"

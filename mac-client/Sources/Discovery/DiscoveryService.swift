@@ -4,35 +4,44 @@ import DualLinkCore
 
 // MARK: - DiscoveryService
 //
-// Usa mDNS/Bonjour para descoberta automática de dispositivos DualLink na rede local.
-// Service type: _duallink._tcp.local.
+// Browses for DualLink receivers advertised via mDNS/Bonjour:
+//   Service type: _duallink._tcp.local.
 //
-// TODO: Sprint 1.3.2 — Implementar mDNS discovery completo
+// TXT record keys read from the receiver:
+//   version  = "1"
+//   displays = number of display channels
+//   port     = base TCP signaling port (default 7879)
+//   host     = LAN IP address
+//   fp       = first 16 hex chars of TLS fingerprint
 
 public final class DiscoveryService: ObservableObject {
-    public static let serviceType = "_duallink._tcp"
+    public static let serviceType   = "_duallink._tcp"
     public static let serviceDomain = "local."
-    public static let defaultPort: UInt16 = 8443
 
+    /// All currently visible DualLink receivers on the LAN.
     @Published public private(set) var discoveredPeers: [PeerInfo] = []
+
     private var browser: NWBrowser?
 
     public init() {}
 
-    /// Inicia a busca por dispositivos DualLink na rede local.
+    /// Start Bonjour browsing for DualLink receivers.
     public func startBrowsing() {
-        let parameters = NWParameters()
-        parameters.includePeerToPeer = true
+        stopBrowsing()
+        var params = NWParameters()
+        params.includePeerToPeer = true
 
         let browser = NWBrowser(
             for: .bonjourWithTXTRecord(type: Self.serviceType, domain: Self.serviceDomain),
-            using: parameters
+            using: params
         )
 
-        browser.stateUpdateHandler = { [weak self] state in
+        browser.stateUpdateHandler = { state in
             switch state {
             case .failed(let error):
                 print("[Discovery] Browser failed: \(error)")
+            case .ready:
+                print("[Discovery] Browsing for DualLink receivers…")
             default:
                 break
             }
@@ -52,9 +61,59 @@ public final class DiscoveryService: ObservableObject {
         discoveredPeers = []
     }
 
+    // MARK: - Private
+
     private func handleResults(_ results: Set<NWBrowser.Result>) {
-        // TODO: Sprint 1.3.2 — parsear TXT records e construir PeerInfo
-        // Por enquanto, apenas log
-        print("[Discovery] Found \(results.count) devices")
+        var peers: [PeerInfo] = []
+
+        for result in results {
+            // Only handle Bonjour service endpoints
+            guard case .service(let name, _, _, _) = result.endpoint else { continue }
+
+            // Extract TXT record values
+            var host: String = ""
+            var port: Int    = 7879
+            var displays: Int = 1
+
+            if case .bonjour(let txt) = result.metadata {
+                host     = txt.dictionary["host"]     ?? ""
+                port     = Int(txt.dictionary["port"]     ?? "") ?? 7879
+                displays = Int(txt.dictionary["displays"] ?? "") ?? 1
+            }
+
+            // Skip if we couldn't determine an IP address
+            guard !host.isEmpty else {
+                print("[Discovery] Receiver '\(name)' has no 'host' TXT record — skipping")
+                continue
+            }
+
+            let peer = PeerInfo(
+                id:      name,
+                name:    name,
+                address: host,
+                port:    port
+            )
+            peers.append(peer)
+            print("[Discovery] Found: \(name) at \(host):\(port) (\(displays) display(s))")
+        }
+
+        // Sort by name for stable ordering
+        peers.sort { $0.name < $1.name }
+        discoveredPeers = peers
+    }
+}
+
+// MARK: - NWTXTRecord convenience
+
+private extension NWTXTRecord {
+    /// All key=value pairs as a [String: String] dictionary.
+    var dictionary: [String: String] {
+        var result: [String: String] = [:]
+        for key in self.keys {
+            if let entry = self.getEntry(for: key) {
+                result[key] = entry
+            }
+        }
+        return result
     }
 }

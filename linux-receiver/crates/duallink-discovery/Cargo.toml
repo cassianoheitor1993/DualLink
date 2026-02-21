@@ -1,6 +1,6 @@
 [package]
 name = "duallink-discovery"
-description = "mDNS/Bonjour service discovery"
+description = "mDNS/Bonjour service discovery and advertisement"
 version.workspace = true
 edition.workspace = true
 
@@ -10,3 +10,4 @@ tokio.workspace = true
 tracing.workspace = true
 mdns-sd.workspace = true
 thiserror.workspace = true
+hostname = "0.4"

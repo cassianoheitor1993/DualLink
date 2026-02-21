@@ -5,7 +5,8 @@ use std::time::Duration;
 use anyhow::Result;
 use duallink_core::{EncodedFrame, detect_usb_ethernet};
 use duallink_decoder::DecoderFactory;
-use duallink_transport::{DualLinkReceiver, DisplayChannels, InputSender, SignalingEvent};
+use duallink_discovery::{DualLinkAdvertiser, detect_local_ip};
+use duallink_transport::{DualLinkReceiver, DisplayChannels, InputSender, SignalingEvent, SIGNALING_PORT};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
@@ -49,14 +50,27 @@ pub async fn run() -> Result<()> {
         display_count
     );
 
-    let (_recv, channels, input_sender, _startup) =
+    let (_recv, channels, input_sender, startup) =
         DualLinkReceiver::start_all(display_count).await?;
 
+    // ── Advertise via mDNS so senders can auto-discover this receiver ──────
+    let local_ip = detect_local_ip();
+    let _advertiser = DualLinkAdvertiser::register(
+        "DualLink Receiver",
+        display_count,
+        SIGNALING_PORT,
+        local_ip,
+        &startup.tls_fingerprint,
+    )
+    .map_err(|e| warn!("mDNS advertising unavailable: {e}"))
+    .ok();
+
     info!(
-        "Waiting for macOS DualLink client to connect on {} port pair(s).",
+        "Waiting for DualLink client to connect on {} port pair(s).",
         channels.len()
     );
-    info!("Enter this machine's IP in the DualLink mac app and press Start.");
+    info!("Pairing PIN: {}  |  TLS fingerprint: {}…", startup.pairing_pin, &startup.tls_fingerprint[..16.min(startup.tls_fingerprint.len())]);
+    info!("Enter {}  in the DualLink sender app.", local_ip);
 
     // ── Spawn one task per display ─────────────────────────────────────────
     let mut handles = Vec::with_capacity(channels.len());

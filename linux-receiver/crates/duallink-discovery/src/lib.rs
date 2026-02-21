@@ -1,3 +1,6 @@
+mod advertiser;
+pub use advertiser::{DualLinkAdvertiser, detect_local_ip};
+
 use duallink_core::PeerInfo;
 use mdns_sd::{ServiceDaemon, ServiceEvent};
 use tracing::{debug, info};

@@ -40,6 +40,9 @@ rcgen       = "0.13"
 rustls      = { version = "0.23", features = ["ring"] }
 tokio-rustls = "0.26"
 
+# mDNS discovery (browse for receivers without manual IP entry)
+mdns-sd = "0.10"
+
 # Input injection (uinput virtual devices)
 evdev  = { version = "1", features = ["tokio"] }
 

@@ -27,3 +27,4 @@ gstreamer     = { workspace = true }
 gstreamer-app = { workspace = true }
 hostname      = { workspace = true }
 evdev         = { workspace = true }
+mdns-sd       = { workspace = true }

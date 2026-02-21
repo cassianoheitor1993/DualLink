@@ -296,3 +296,140 @@
 ---
 
 *Last updated: 2026-02-20 — Sprint 4.3 (GUI) complete*
+
+---
+
+## Phase 5 — Platform Expansion & Multi-Monitor
+
+### Sprint 5A — Multi-Monitor Protocol & Cross-Platform Receiver *(~2026-02-24)*
+
+**Goal:** Extend transport to support N independent display port pairs; add platform receiver skeletons.
+
+- **Multi-display transport (`duallink-transport`):**
+  - `DualLinkReceiver::start_all(n: u8)` binds N port pairs (UDP `7878+2n` / TCP `7879+2n`)
+  - `DisplayChannels { frame_rx, event_rx, display_index }` — per-display channel bundle
+  - `SIGNALING_PORT` constant exported for advertiser use
+  - `StartupInfo { pairing_pin, tls_fingerprint }` shared across all displays (single TLS identity)
+- **DLNK frame header extended** — byte `[17]` encodes display index (0–7)
+- **`duallink-decoder` update** — `DecoderFactory::best_available_with_display(w, h)` creates a GStreamer decode+display pipeline per display
+- **Status:** ✅ Complete
+
+---
+
+### Sprint 5B — Windows & macOS Receiver Skeletons + Linux Sender Scaffold *(~2026-02-26)*
+
+**Goal:** Scaffold cross-platform receiver crates and Linux sender workspace.
+
+- **Windows receiver skeleton** (`windows-sender/crates/duallink-core`) — shared types crate (Rust, MSVC target)
+- **macOS receiver scaffold** — Swift Package Manager workspace; `ScreenCapture`, `VideoEncoder`, `VirtualDisplay`, `Signaling`, `Streaming`, `InputInjection`, `Transport`, `Discovery` target structure
+- **Linux sender workspace** (`linux-sender/`) — Cargo workspace with `duallink-core`, `duallink-capture-linux`, `duallink-linux-sender`
+- **CI:** `linux-sender-build` and `windows-sender-build` jobs added to `ci.yml`
+- **Status:** ✅ Complete
+
+---
+
+### Sprint 5C — Rust Linux Sender Transport Client *(~2026-03-01)*
+
+**Goal:** Implement the full sender-side transport client in Rust for Linux.
+
+- **`duallink-transport-client` crate** — `SignalingClient` (TLS/TCP) + `VideoSender` (UDP DLNK-framed)
+  - `hello` / PIN / config handshake with receiver
+  - `send_frame()` — DLNK header construction + UDP packet dispatch
+- **`duallink-capture-linux` crate** — PipeWire `xdg-desktop-portal` screen capture via `ashpd`
+  - `PipeWireCapture::open_session(display_index)` → raw BGRA frame stream
+- **`duallink-linux-sender/src/encoder.rs`** — GStreamer H.264 encoder
+  - Elements tried in order: `vaapih264enc` → `nvh264enc` → `x264enc`
+  - `appsrc → videoconvert → <encoder> → appsink` pipeline
+- **Status:** ✅ Complete
+
+---
+
+### Sprint 5D — Sender UI + Input Injection + Multi-Display *(~2026-03-04)*
+
+**Goal:** Working end-to-end Linux sender with GUI and input forwarding.
+
+- **`duallink-linux-sender/src/ui.rs`** — egui settings UI
+  - Inputs: receiver host, pairing PIN, resolution, FPS, bitrate, display count
+  - Start / Stop buttons wired to `SenderPipeline`
+  - mDNS discovery picker (browse `_duallink._tcp.local.` — Phase 5E backfill)
+- **`SenderPipeline`** — per-display capture → encode → UDP-send async task
+  - `Arc<Notify>` stop signal (clean shutdown without channel races)
+  - Reconnect loop: pipeline restarts on disconnect without process restart
+- **`duallink-linux-sender/src/input_inject.rs`** — uinput virtual mouse + keyboard
+  - Receives `InputEvent` from receiver via signaling TCP back-channel
+  - Creates `VirtualDevice` (evdev) for mouse and keyboard separately
+- **`duallink-app` CLI** — updated to use `start_all()` and run N display loops concurrently
+- **Status:** ✅ Complete
+
+---
+
+### Sprint 5E — mDNS Advertising + Windows WGC Sender *(~2026-03-08)*
+
+**Goal:** Zero-config discovery for all platforms; full Windows sender pipeline.
+
+- **`duallink-discovery` crate** (`linux-receiver/crates/`):
+  - `DualLinkAdvertiser::register(name, displays, port, ip, fp)` — registers `_duallink._tcp.local.` mDNS service via `mdns-sd`
+  - TXT record: `version`, `displays`, `port`, `host`, `fp` (first 16 hex chars of TLS fingerprint)
+  - `detect_local_ip()` — UDP probe trick for primary LAN IPv4 (no packets sent)
+- **`duallink-app/src/app.rs`** — wires `detect_local_ip()` + `DualLinkAdvertiser::register()` at startup; logs `"Enter <ip> in the DualLink sender app"`
+- **Windows sender (`duallink-windows-sender`):**
+  - `WGCCapture` — `GraphicsCaptureSession` + `FramePool` → D3D11 texture → CPU staging → BGRA bytes
+  - `GStreamer H.264 encoder` — `appsrc → videoconvert → mfh264enc / nvh264enc / x264enc → appsink`
+  - `WinSenderPipeline` — per-display capture → encode → UDP + TLS signaling task
+  - `WinSenderUi` (egui) — receiver host, PIN, resolution, FPS, bitrate fields + Start/Stop
+  - mDNS discovery panel in UI using `mdns-sd` browse
+- **macOS sender — SwiftUI Discovery UI:**
+  - `DiscoveryService.swift` — `NWBrowser` for `_duallink._tcp` + TXT record parsing
+  - `ContentView.swift` — receiver picker, connection status, PIN entry field
+- **linux-sender UI** — mDNS browse + receiver picker added to UI
+- **Status:** ✅ Complete — committed `f85a6b6` (18 files, +1605 insertions)
+
+---
+
+### Sprint 5F — SendInput Injection + Decoder Hot-Reload + SwiftUI Discovery *(~2026-03-10)*
+
+**Goal:** Full input round-trip on Windows; seamless resolution changes; polished macOS UI.
+
+- **Windows SendInput injection (`input_inject.rs`):**
+  - `SendInputInjector::inject(event)` — translates `InputEvent` to `SendInput` Win32 calls
+  - Full VK map: letters, digits, F-keys, modifiers, arrows, media keys
+  - Mouse absolute positioning via `MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MOVE`
+- **`WinSenderPipeline` stop fix:**
+  - Replaced `oneshot::Sender` (drop-based, unreliable) with `Arc<Notify>`
+  - `stop()` calls `notify_waiters()`; task awaits `stop_notify.notified()`
+  - Eliminates "pipeline won't stop" race on quick Start→Stop cycles
+- **Decoder hot-reload (`duallink-app/src/app.rs`):**
+  - `ConfigUpdated` with resolution change breaks frame loop with `"config_updated"` reason
+  - `pending_config: Option<StreamConfig>` carries new config into next `'reconnect` iteration
+  - Decoder re-initialised with new `width × height` without TCP reconnect
+- **SwiftUI Discovery polish (`mac-client`):**
+  - `NWTXTRecord` → `dictionary` computed property (iterates `self.keys` + `getEntry(for:)`)
+  - `PeerInfo` view updated to show LAN IP, display count, short fingerprint
+  - Auto-connects when only one receiver is visible on the LAN
+- **Status:** ✅ Complete — committed `61844ed` (7 files, +409 insertions)
+
+---
+
+### Sprint 5G — duallink-gui mDNS + Multi-Display + LAN IP *(~2026-03-12)*
+
+**Goal:** Bring the egui GUI receiver up to parity with the CLI receiver.
+
+- **`duallink-gui` upgraded to multi-display (`start_all`):**
+  - Imports `duallink-discovery` dependency — `DualLinkAdvertiser` + `detect_local_ip()`
+  - `DualLinkReceiver::start()` → `start_all(DUALLINK_DISPLAY_COUNT)` (env-var, default 1)
+  - Extra displays (index ≥ 1) run as background tokio tasks (`run_background_display`)
+  - Display 0 drives GUI state as before
+- **mDNS advertising from GUI:**
+  - `detect_local_ip()` called after startup; `DualLinkAdvertiser::register()` called with PIN fingerprint
+  - `GuiState.lan_ip`, `GuiState.mdns_active`, `GuiState.display_count` fields added
+- **PIN card shows connection info:**
+  - LAN IP: `"Connect from: 192.168.X.Y  •  1 display"` row below PIN
+  - mDNS badge: `"mDNS ✓"` (green) / `"mDNS ✗"` (orange)
+- **Decoder hot-reload in GUI:**
+  - `pending_config: Option<StreamConfig>` — `ConfigUpdated` with resolution change breaks frame loop, decoder re-initialised next iteration
+- **Streaming stats — Displays chip** added to stats card
+- **windows-sender README rewritten** — removes "Phase 5B skeleton" warning, documents full Phase 5E/5F feature set
+- **CI upgrades:**
+  - `linux-sender-build`: renamed from "skeleton"; upgraded to `cargo build` (not just `check`)
+  - `windows-sender-build`: checks `duallink-windows-sender` crate (not just core)
+- **Status:** ✅ Complete

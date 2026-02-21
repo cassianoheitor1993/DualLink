@@ -180,9 +180,9 @@ jobs:
         # Local Windows builds work — see windows-receiver/README.md.
         continue-on-error: true
 
-  # ── Linux Sender (Rust — Phase 5B.4: skeleton build validation) ─────────
+  # ── Linux Sender (Rust — Phase 5C+: PipeWire capture + GStreamer encode)  ──
   linux-sender-build:
-    name: Linux Sender Build (skeleton)
+    name: Linux Sender Build
     runs-on: ubuntu-24.04
 
     steps:
@@ -210,13 +210,13 @@ jobs:
           key: linux-sender-cargo-${{ hashFiles('linux-sender/Cargo.lock') }}
           restore-keys: linux-sender-cargo-
 
-      - name: cargo check (all workspace crates)
-        run: cargo check --workspace
+      - name: cargo build (all workspace crates)
+        run: cargo build --workspace
         working-directory: linux-sender
 
-  # ── Windows Sender (Rust — Phase 5B.5: skeleton build validation) ────────
+  # ── Windows Sender (Rust — Phase 5E+: WGC capture + GStreamer + SendInput) ─
   windows-sender-build:
-    name: Windows Sender Build (skeleton)
+    name: Windows Sender Build
     runs-on: windows-latest
 
     steps:
@@ -226,6 +226,26 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
+
+      - name: Install GStreamer MSVC via Chocolatey
+        run: |
+          choco install gstreamer --version=1.24.3 --yes
+          choco install gstreamer-devel --version=1.24.3 --yes
+        continue-on-error: true
+
+      - name: Set GStreamer environment
+        shell: pwsh
+        run: |
+          $gstRoot = "C:\gstreamer\1.0\msvc_x86_64"
+          if (Test-Path $gstRoot) {
+            echo "PKG_CONFIG_PATH=$gstRoot\lib\pkgconfig" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+            echo "$gstRoot\bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+          }
+        continue-on-error: true
+
+      - name: Install pkg-config
+        run: choco install pkgconfiglite --yes
+        continue-on-error: true
 
       - name: Cache Cargo registry & build
         uses: actions/cache@v4
@@ -240,8 +260,11 @@ jobs:
       - name: cargo check duallink-core (no GStreamer needed)
         run: cargo check -p duallink-core
         working-directory: windows-sender
-        # Note: full build requires GStreamer MSVC — see windows-sender/README.md
-        continue-on-error: true
+
+      - name: cargo check duallink-windows-sender (requires GStreamer)
+        run: cargo check -p duallink-windows-sender
+        working-directory: windows-sender
+        continue-on-error: true  # GStreamer MSVC CI install may be unavailable
 
   # ── Release: build & upload on version tags ───────────────────────────
   release:

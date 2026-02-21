@@ -80,6 +80,9 @@ impl eframe::App for DualLinkApp {
                 bitrate_mbps:    s.bitrate_mbps,
                 transport:       s.transport.clone(),
                 logs:            s.logs.iter().cloned().collect::<Vec<_>>(),
+                lan_ip:          s.lan_ip.clone(),
+                mdns_active:     s.mdns_active,
+                display_count:   s.display_count,
             }
         };
 
@@ -100,7 +103,7 @@ impl eframe::App for DualLinkApp {
                 let show_pin = !snap.pairing_pin.is_empty()
                     && !matches!(snap.phase, Phase::Error(_));
                 if show_pin {
-                    self.render_pin_card(ui, ctx, &snap.pairing_pin);
+                    self.render_pin_card(ui, ctx, &snap);
                     ui.add_space(6.0);
 
                     // TLS fingerprint toggle
@@ -222,7 +225,8 @@ fn render_status_card(ui: &mut egui::Ui, snap: &StateSnapshot) {
 }
 
 impl DualLinkApp {
-    fn render_pin_card(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, pin: &str) {
+    fn render_pin_card(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, snap: &StateSnapshot) {
+        let pin = &snap.pairing_pin;
         card(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(
@@ -278,6 +282,31 @@ impl DualLinkApp {
                     .color(TEXT_DIM)
                     .font(FontId::new(12.0, FontFamily::Proportional)),
             );
+
+            // LAN IP row — shown once detect_local_ip() has resolved
+            if !snap.lan_ip.is_empty() {
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    let mdns_badge = if snap.mdns_active {
+                        RichText::new("mDNS ✓")
+                            .color(Color32::from_rgb(60, 200, 80))
+                            .font(FontId::new(11.5, FontFamily::Proportional))
+                    } else {
+                        RichText::new("mDNS ✗")
+                            .color(Color32::from_rgb(180, 100, 50))
+                            .font(FontId::new(11.5, FontFamily::Proportional))
+                    };
+                    ui.label(mdns_badge);
+                    ui.label(
+                        RichText::new(format!("Connect from: {}  •  {} display{}",
+                            snap.lan_ip,
+                            snap.display_count,
+                            if snap.display_count == 1 { "" } else { "s" }))
+                            .color(TEXT_DIM)
+                            .font(FontId::new(12.0, FontFamily::Proportional)),
+                    );
+                });
+            }
         });
     }
 
@@ -332,6 +361,7 @@ fn render_stats_card(ui: &mut egui::Ui, snap: &StateSnapshot) {
             stat_chip(ui, "Decoded",  &snap.frames_decoded.to_string());
             stat_chip(ui, "Received", &snap.frames_received.to_string());
             stat_chip(ui, "Bitrate",  &format!("{:.1} Mbit/s", snap.bitrate_mbps));
+            stat_chip(ui, "Displays", &snap.display_count.to_string());
         });
     });
 }
@@ -439,6 +469,9 @@ struct StateSnapshot {
     bitrate_mbps:    f64,
     transport:       String,
     logs:            Vec<String>,
+    lan_ip:          String,
+    mdns_active:     bool,
+    display_count:   u8,
 }
 
 // Forward Phase methods onto the snapshot for ergonomics in the renderer

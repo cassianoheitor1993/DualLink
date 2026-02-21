@@ -73,6 +73,12 @@ pub struct GuiState {
     pub bitrate_mbps:     f64,
     pub transport:        String,
     pub logs:             VecDeque<String>,
+    /// LAN IPv4 address shown in the PIN card so users know where to connect.
+    pub lan_ip:           String,
+    /// Whether mDNS advertising is active (set after `DualLinkAdvertiser::register` succeeds).
+    pub mdns_active:      bool,
+    /// Number of display streams bound (1 unless `DUALLINK_DISPLAY_COUNT` > 1).
+    pub display_count:    u8,
     // Rolling-window helpers (private)
     last_frame_times:  VecDeque<Instant>,
     last_byte_amounts: VecDeque<(Instant, u64)>,
@@ -90,6 +96,9 @@ impl Default for GuiState {
             bitrate_mbps:    0.0,
             transport:       "detecting…".into(),
             logs:            VecDeque::new(),
+            lan_ip:          String::new(),
+            mdns_active:     false,
+            display_count:   1,
             last_frame_times:  VecDeque::new(),
             last_byte_amounts: VecDeque::new(),
         }

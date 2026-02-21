@@ -1,10 +1,13 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use tracing::{info, warn};
 
-use duallink_core::{detect_usb_ethernet, EncodedFrame};
+use duallink_core::{detect_usb_ethernet, EncodedFrame, StreamConfig};
 use duallink_decoder::DecoderFactory;
-use duallink_transport::{DualLinkReceiver, SignalingEvent};
+use duallink_discovery::{DualLinkAdvertiser, detect_local_ip};
+use duallink_transport::{DualLinkReceiver, DisplayChannels, InputSender, SignalingEvent, SIGNALING_PORT};
 
 use crate::state::{Phase, SharedState};
 
@@ -65,11 +68,6 @@ pub async fn run(state: SharedState, ctx: egui::Context) {
     ctx.request_repaint();
 
     // ── Step 0b: unconditionally release ports before binding ─────────────
-    //
-    // Always stop the service and fuser-kill the ports, then wait for sockets
-    // to be released.  This works regardless of whether we're launched from a
-    // terminal or from the GNOME app launcher (where is-active can silently
-    // fail due to D-Bus environment differences).
     if tokio::task::spawn_blocking(port_is_busy).await.unwrap_or(false) {
         {
             let mut s = state.lock().unwrap();
@@ -98,9 +96,16 @@ pub async fn run(state: SharedState, ctx: egui::Context) {
         ctx.request_repaint();
     }
 
-    // ── Step 1: bind ports and generate PIN / TLS key ─────────────────────
-    let (recv, mut frame_rx, mut event_rx, input_sender, startup) =
-        match DualLinkReceiver::start().await {
+    // ── Step 1: bind ports, generate PIN / TLS key, start all displays ────
+    let display_count: u8 = std::env::var("DUALLINK_DISPLAY_COUNT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1)
+        .max(1)
+        .min(8);
+
+    let (recv, mut channels, input_sender, startup) =
+        match DualLinkReceiver::start_all(display_count).await {
             Ok(v) => v,
             Err(e) => {
                 let msg = e.to_string();
@@ -125,40 +130,101 @@ pub async fn run(state: SharedState, ctx: egui::Context) {
     // are not dropped.
     let _recv = recv;
 
+    // ── Step 2: detect LAN IP and advertise via mDNS ─────────────────────
+    let local_ip = detect_local_ip();
+    let lan_ip_str = local_ip.to_string();
+
+    let _advertiser = DualLinkAdvertiser::register(
+        "DualLink Receiver",
+        display_count,
+        SIGNALING_PORT,
+        local_ip,
+        &startup.tls_fingerprint,
+    )
+    .map_err(|e| warn!("mDNS advertising unavailable: {e}"))
+    .ok();
+
     {
         let mut s = state.lock().unwrap();
         s.pairing_pin     = startup.pairing_pin.clone();
         s.tls_fingerprint = startup.tls_fingerprint.clone();
         s.phase           = Phase::WaitingForClient;
+        s.lan_ip          = lan_ip_str.clone();
+        s.mdns_active     = _advertiser.is_some();
+        s.display_count   = display_count;
         s.push_log(format!("Pairing PIN : {}", startup.pairing_pin));
         s.push_log(format!(
             "TLS fingerprint: {}…",
             &startup.tls_fingerprint[..startup.tls_fingerprint.len().min(32)]
         ));
+        s.push_log(format!("LAN IP : {}  (mDNS: {})", lan_ip_str, if _advertiser.is_some() { "active" } else { "unavailable" }));
+        s.push_log(format!("Display streams: {}", display_count));
         s.push_log("Ready — waiting for macOS DualLink client…");
     }
     ctx.request_repaint();
 
-    // ── Step 2: session loop (handles reconnects) ─────────────────────────
-    loop {
-        // ── 2a: wait for a client to connect ─────────────────────────────
-        let (config, device_name, client_addr) = loop {
-            match event_rx.recv().await {
-                Some(SignalingEvent::SessionStarted {
-                    device_name,
-                    config,
-                    client_addr,
-                    ..
-                }) => {
-                    break (config, device_name, client_addr);
+    // ── Step 3: spawn GUI-less loops for displays 1+ ─────────────────────
+    // Display 0 is handled below (integrated with GUI state); displays 1+
+    // run the same session-reconnect pattern but without GUI state updates.
+    let extra_channels: Vec<DisplayChannels> = channels.drain(1..).collect();
+    for ch in extra_channels {
+        let is = input_sender.clone();
+        tokio::spawn(async move {
+            run_background_display(ch, is).await;
+        });
+    }
+
+    // ── Step 4: display-0 session loop (GUI-integrated) ──────────────────
+    let ch0 = match channels.into_iter().next() {
+        Some(ch) => ch,
+        None => {
+            let mut s = state.lock().unwrap();
+            s.phase = Phase::Error("No display channels returned".into());
+            ctx.request_repaint();
+            return;
+        }
+    };
+
+    let DisplayChannels { mut frame_rx, mut event_rx, .. } = ch0;
+
+    // Pending config forwarded from a mid-session ConfigUpdated (hot-reload).
+    let mut pending_config: Option<StreamConfig> = None;
+
+    'reconnect: loop {
+        // ── 4a: wait for a client to connect (unless hot-reload) ─────────
+        let (config, device_name, client_addr) = if let Some(cfg) = pending_config.take() {
+            // Hot-reload: re-init decoder with new resolution in flying session
+            let s = state.lock().unwrap();
+            info!("Display[0] Hot-reload: new config {:?}", cfg);
+            if let Phase::Streaming { ref peer_name, ref peer_addr } = s.phase {
+                let pn = peer_name.clone();
+                let pa = peer_addr.clone();
+                drop(s);
+                let addr = pa.parse().unwrap_or_else(|_| "0.0.0.0:0".parse().unwrap());
+                (cfg, pn, addr)
+            } else {
+                drop(s);
+                (cfg, "[hot-reload]".into(), "0.0.0.0:0".parse().unwrap())
+            }
+        } else {
+            loop {
+                match event_rx.recv().await {
+                    Some(SignalingEvent::SessionStarted {
+                        device_name,
+                        config,
+                        client_addr,
+                        ..
+                    }) => {
+                        break (config, device_name, client_addr);
+                    }
+                    Some(SignalingEvent::ClientDisconnected) => {
+                        let mut s = state.lock().unwrap();
+                        s.push_log("Client disconnected before completing pairing");
+                        ctx.request_repaint();
+                    }
+                    None => return, // All senders dropped → process shutting down
+                    _ => {}
                 }
-                Some(SignalingEvent::ClientDisconnected) => {
-                    let mut s = state.lock().unwrap();
-                    s.push_log("Client disconnected before completing pairing");
-                    ctx.request_repaint();
-                }
-                None => return, // All senders dropped → process shutting down
-                _ => {}
             }
         };
 
@@ -176,7 +242,7 @@ pub async fn run(state: SharedState, ctx: egui::Context) {
         }
         ctx.request_repaint();
 
-        // ── 2b: spawn decode+display thread ──────────────────────────────
+        // ── 4b: spawn decode+display thread ──────────────────────────────
         //
         // GStreamer MUST be initialised and used on a single OS thread
         // (it creates a display window + message loop).  We use
@@ -189,6 +255,8 @@ pub async fn run(state: SharedState, ctx: egui::Context) {
         let state2     = Arc::clone(&state);
         let ctx2       = ctx.clone();
         let input_fwd  = input_sender.clone();
+        let push_errors = Arc::new(AtomicU64::new(0));
+        let pe2 = Arc::clone(&push_errors);
 
         let decode_handle = tokio::task::spawn_blocking(move || {
             // Create decoder (and start GStreamer pipeline / video window).
@@ -215,8 +283,10 @@ pub async fn run(state: SharedState, ctx: egui::Context) {
             // Frame loop
             while let Some(frame) = decode_rx.blocking_recv() {
                 let bytes = frame.data.len();
+                let kf    = frame.is_keyframe;
                 match decoder.push_frame(frame) {
                     Ok(()) => {
+                        pe2.fetch_add(0, Ordering::Relaxed); // no-op to keep pe2 alive
                         let mut s = state2.lock().unwrap();
                         // Promote phase to Streaming on first successfully decoded frame
                         if let Phase::Connected { peer_name, peer_addr } = s.phase.clone() {
@@ -231,13 +301,10 @@ pub async fn run(state: SharedState, ctx: egui::Context) {
                         }
                     }
                     Err(e) => {
-                        let count = {
-                            let s = state2.lock().unwrap();
-                            s.frames_decoded
-                        };
-                        if count < 20 || count % 120 == 0 {
+                        let errs = pe2.fetch_add(1, Ordering::Relaxed) + 1;
+                        if errs <= 10 || errs % 120 == 0 {
                             let mut s = state2.lock().unwrap();
-                            s.push_log(format!("[WARN] Decode error: {}", e));
+                            s.push_log(format!("[WARN] Decode error #{} ({} bytes kf={}): {}", errs, bytes, kf, e));
                         }
                     }
                 }
@@ -251,8 +318,8 @@ pub async fn run(state: SharedState, ctx: egui::Context) {
             info!("Decode thread exiting");
         });
 
-        // ── 2c: receive + forward frame loop ─────────────────────────────
-        loop {
+        // ── 4c: receive + forward frame loop ─────────────────────────────
+        let session_exit_reason = loop {
             tokio::select! {
                 frame = frame_rx.recv() => {
                     let Some(frame) = frame else {
@@ -267,7 +334,7 @@ pub async fn run(state: SharedState, ctx: egui::Context) {
                     }
                     if decode_tx.send(frame).await.is_err() {
                         warn!("Decode thread gone — stopping session");
-                        break;
+                        break "decode_thread_gone";
                     }
                 }
 
@@ -275,40 +342,144 @@ pub async fn run(state: SharedState, ctx: egui::Context) {
                     match event {
                         Some(SignalingEvent::SessionStopped { session_id }) => {
                             info!("Session {} stopped by sender", session_id);
-                            break;
+                            break "session_stopped";
                         }
                         Some(SignalingEvent::ClientDisconnected) | None => {
                             warn!("Client disconnected");
-                            break;
+                            break "client_disconnected";
                         }
-                        Some(SignalingEvent::ConfigUpdated { config }) => {
-                            let mut s = state.lock().unwrap();
-                            s.push_log(format!(
-                                "Config update: {}×{} @ {} fps",
-                                config.resolution.width,
-                                config.resolution.height,
-                                config.target_fps
-                            ));
+                        Some(SignalingEvent::ConfigUpdated { config: new_cfg }) => {
+                            let cur_w = config.resolution.width;
+                            let cur_h = config.resolution.height;
+                            if new_cfg.resolution.width != cur_w || new_cfg.resolution.height != cur_h {
+                                let mut s = state.lock().unwrap();
+                                s.push_log(format!(
+                                    "Resolution change {}×{} → {}×{}: hot-reloading decoder",
+                                    cur_w, cur_h,
+                                    new_cfg.resolution.width, new_cfg.resolution.height
+                                ));
+                                drop(s);
+                                ctx.request_repaint();
+                                pending_config = Some(new_cfg);
+                                break "config_updated";
+                            } else {
+                                let mut s = state.lock().unwrap();
+                                s.push_log(format!(
+                                    "Config update: {}×{} @ {} fps",
+                                    new_cfg.resolution.width,
+                                    new_cfg.resolution.height,
+                                    new_cfg.target_fps
+                                ));
+                            }
                         }
                         _ => {}
                     }
                 }
             }
-        }
+        };
 
         // Drop sender → decode thread will drain and exit
         drop(decode_tx);
         let _ = decode_handle.await;
 
-        // ── 2d: reset for next session ────────────────────────────────────
-        {
-            let mut s = state.lock().unwrap();
-            s.phase = Phase::WaitingForClient;
-            s.reset_stats();
-            let pin = s.pairing_pin.clone();
-            s.push_log("Client disconnected — waiting for new connection…");
-            s.push_log(format!("Pairing PIN still valid: {}", pin));
+        info!("Display[0] session exit: {}", session_exit_reason);
+
+        if session_exit_reason == "channels_closed" {
+            break 'reconnect;
         }
-        ctx.request_repaint();
+
+        // If hot-reload: pending_config is already set; skip the reset below.
+        if session_exit_reason != "config_updated" {
+            // ── 4d: reset for next session ────────────────────────────────
+            {
+                let mut s = state.lock().unwrap();
+                s.phase = Phase::WaitingForClient;
+                s.reset_stats();
+                let pin = s.pairing_pin.clone();
+                s.push_log("Client disconnected — waiting for new connection…");
+                s.push_log(format!("Pairing PIN still valid: {}", pin));
+            }
+            ctx.request_repaint();
+
+            // Brief pause so the OS has time to clean up the prior TCP conn
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        }
+    }
+}
+
+// ── Background display loop (no GUI state) ────────────────────────────────────
+
+/// Handles one extra display (index ≥ 1) without touching the GUI state.
+async fn run_background_display(ch: DisplayChannels, input_sender: InputSender) {
+    let DisplayChannels { display_index, mut frame_rx, mut event_rx } = ch;
+    let mut pending_config: Option<StreamConfig> = None;
+
+    'reconnect: loop {
+        // Wait for SessionStarted or use hot-reload config
+        let config = if let Some(cfg) = pending_config.take() {
+            cfg
+        } else {
+            loop {
+                match event_rx.recv().await {
+                    Some(SignalingEvent::SessionStarted { config, .. }) => break config,
+                    Some(SignalingEvent::ClientDisconnected) => {
+                        warn!("Display[{}] disconnected before hello", display_index);
+                    }
+                    None => {
+                        info!("Display[{}] channel closed — exiting", display_index);
+                        break 'reconnect;
+                    }
+                    _ => {}
+                }
+            }
+        };
+
+        let width  = config.resolution.width;
+        let height = config.resolution.height;
+        let (decode_tx, mut decode_rx) = tokio::sync::mpsc::channel::<EncodedFrame>(64);
+        let is2 = input_sender.clone();
+
+        let handle = tokio::task::spawn_blocking(move || {
+            if let Ok(dec) = DecoderFactory::best_available_with_display(width, height) {
+                while let Some(frame) = decode_rx.blocking_recv() {
+                    let _ = dec.push_frame(frame);
+                    for ev in dec.poll_input_events() {
+                        let _ = is2.try_send(ev);
+                    }
+                }
+            }
+        });
+
+        let exit_reason = loop {
+            tokio::select! {
+                Some(frame) = frame_rx.recv() => {
+                    if decode_tx.send(frame).await.is_err() { break "decode_gone"; }
+                }
+                Some(evt) = event_rx.recv() => {
+                    match evt {
+                        SignalingEvent::SessionStopped { .. } => break "stopped",
+                        SignalingEvent::ClientDisconnected => break "disconnected",
+                        SignalingEvent::ConfigUpdated { config: new_cfg } => {
+                            let cur_w = config.resolution.width;
+                            let cur_h = config.resolution.height;
+                            if new_cfg.resolution.width != cur_w || new_cfg.resolution.height != cur_h {
+                                pending_config = Some(new_cfg);
+                                break "config_updated";
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                else => break "closed",
+            }
+        };
+
+        drop(decode_tx);
+        let _ = handle.await;
+
+        if exit_reason == "closed" { break 'reconnect; }
+        if exit_reason != "config_updated" {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        }
     }
 }

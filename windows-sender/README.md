@@ -3,18 +3,33 @@
 Turns a Windows machine into a DualLink **sender** — shares its screen wirelessly
 or via USB-C with any DualLink receiver (Linux, Windows, or macOS).
 
-> **Phase 5B skeleton** — screen capture pipeline not yet implemented.
-> See the status table in `src/main.rs` for current progress.
+> **Phase 5F complete.**  WGC screen capture, GStreamer H.264 encode, egui settings
+> UI with mDNS auto-discovery, and SendInput-based input injection are all implemented.
+> Virtual display via IddCx/parsec-vdd is planned for Phase 5G.
 
 ---
 
 ## Architecture
 
 ```
-Windows.Graphics.Capture  →  GStreamer H.264 encode  →  UDP:7878  →  Receiver
-(WGC, hardware-accelerated)   (mfh264enc / nvh264enc)   (DLNK frames)
-                               TCP:7879 TLS signaling
+Windows.Graphics.Capture  →  GStreamer H.264 encode  →  UDP:7878+2n  →  Receiver
+(WGC, per-monitor)            (mfh264enc / nvh264enc    (DLNK frames)
+                               / x264enc fallback)
+                               TCP:7879+2n TLS signaling
+                               ↑
+               mDNS discovery (_duallink._tcp.local.)
+               egui settings UI
+               SendInput injection (receiver → local mouse/keyboard)
 ```
+
+---
+
+## Modes
+
+| Mode | Command | Notes |
+|------|---------|-------|
+| **GUI** (default) | `.\duallink-sender.exe` | Launches egui settings window |
+| **Headless** | `DUALLINK_NO_UI=1 .\duallink-sender.exe` | Env-var configured, no window |
 
 ---
 
@@ -48,11 +63,6 @@ $env:PKG_CONFIG_PATH = "C:\gstreamer\1.0\msvc_x86_64\lib\pkgconfig"
 Required for Rust MSVC target and GStreamer native libs.
 <https://visualstudio.microsoft.com/visual-cpp-build-tools/>
 
-### 4. Virtual display driver (for Extend mode)
-
-Install [parsec-vdd](https://github.com/nicehash/parsec-vdd) or an equivalent
-IddCx virtual display driver to create headless virtual monitors.
-
 ---
 
 ## Build
@@ -65,17 +75,55 @@ cargo build --release -p duallink-windows-sender
 
 ---
 
-## Run (when implemented)
+## Run
+
+### GUI mode (default)
 
 ```powershell
-$env:DUALLINK_RECEIVER_IP = "192.168.1.100"
-$env:DUALLINK_PAIRING_PIN = "123456"
+.\target\release\duallink-sender.exe
+```
+
+The settings UI lets you:
+- Browse auto-discovered receivers via mDNS (no manual IP entry needed)
+- Enter receiver IP + pairing PIN manually as fallback
+- Choose resolution, FPS, bitrate, and display index
+- Start / stop the capture pipeline
+
+### Headless mode
+
+```powershell
+$env:DUALLINK_NO_UI   = "1"
+$env:DUALLINK_HOST    = "192.168.1.100"  # receiver LAN IP
+$env:DUALLINK_PIN     = "123456"         # 6-digit PIN shown by receiver
+$env:DUALLINK_DISPLAY = "0"              # zero-based display index
+$env:DUALLINK_WIDTH   = "1920"
+$env:DUALLINK_HEIGHT  = "1080"
+$env:DUALLINK_FPS     = "60"
+$env:DUALLINK_KBPS    = "8000"
 .\target\release\duallink-sender.exe
 ```
 
 ---
 
-## GStreamer encoder priority (Windows)
+## mDNS Discovery
+
+The sender browses for `_duallink._tcp.local.` services on start.  Any running
+DualLink receiver on the same subnet will appear automatically in the UI.  The
+TXT record carries the receiver's LAN IP, port, display count, and a short TLS
+fingerprint for TOFU verification.
+
+---
+
+## SendInput Injection
+
+Mouse and keyboard events captured by the receiver's video window are forwarded
+back to the Windows sender via the signaling TCP connection and replayed with
+`SendInput`.  Virtual key codes are translated using a built-in VK map covering
+all common keys and modifiers.
+
+---
+
+## GStreamer Encoder Priority
 
 | Priority | Element | Requires |
 |----------|---------|---------|
@@ -85,25 +133,27 @@ $env:DUALLINK_PAIRING_PIN = "123456"
 
 ---
 
-## Firewall (sender)
+## Firewall
 
-Allow outbound UDP/TCP on the display ports (usually open by default):
+Allow outbound UDP/TCP for each display (default ports for display 0):
 
 ```powershell
-# Display 0
-netsh advfirewall firewall add rule name="DualLink Sender 0" protocol=UDP dir=out remoteport=7878 action=allow
+netsh advfirewall firewall add rule name="DualLink Video 0"     protocol=UDP dir=out remoteport=7878 action=allow
 netsh advfirewall firewall add rule name="DualLink Signaling 0" protocol=TCP dir=out remoteport=7879 action=allow
 ```
 
 ---
 
-## Phase 5B TODO
+## Implementation Status
 
-- [ ] `GraphicsCaptureSession` + `FramePool` callback implementation
-- [ ] D3D11 texture → CPU staging readback
-- [ ] GStreamer encode: `appsrc → videoconvert → mfh264enc → appsink`
-- [ ] TCP TLS signaling client (`hello` → pairing PIN → config handshake)
-- [ ] UDP DLNK-framed packet sender
-- [ ] egui settings UI (receiver IP, PIN, display count, resolution, codec, fps)
-- [ ] Virtual display driver integration (parsec-vdd / IddCx)
-- [ ] Multi-display sender (N parallel capture + encode + send pipelines)
+| Feature | Phase | Status |
+|---------|-------|--------|
+| WGC screen capture | 5E | ✅ |
+| GStreamer H.264 encode (`mfh264enc` / `nvh264enc` / `x264enc`) | 5E | ✅ |
+| `WinSenderPipeline` (capture → encode → UDP send) | 5E | ✅ |
+| `Arc<Notify>` pipeline stop (clean shutdown) | 5F | ✅ |
+| egui settings UI | 5E | ✅ |
+| mDNS receiver discovery | 5E | ✅ |
+| SendInput input injection (VK map) | 5F | ✅ |
+| Virtual display via IddCx / parsec-vdd | 5G | 🔲 |
+| Multi-display sender (N parallel pipelines) | 5G | 🔲 |

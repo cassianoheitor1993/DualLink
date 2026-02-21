@@ -4,19 +4,34 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use anyhow::Result;
 use duallink_core::{EncodedFrame, detect_usb_ethernet};
 use duallink_decoder::DecoderFactory;
-use duallink_transport::{DualLinkReceiver, SignalingEvent};
+use duallink_transport::{DualLinkReceiver, DisplayChannels, InputSender, SignalingEvent};
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
-/// Main receiver loop — Phase 3 (display + input forwarding + USB transport)
+/// Main receiver loop — Phase 5B (multi-display + cross-platform receiver)
 ///
-/// 1. Detect USB Ethernet (CDC-NCM) if available
-/// 2. Bind UDP:7878 (video) + TCP:7879 (signaling) on all interfaces
-/// 3. Wait for hello handshake → get StreamConfig
-/// 4. Initialise GStreamer display decoder (vaapih264dec → autovideosink)
-/// 5. Receive → decode → display (single pipeline)
-/// 6. Capture mouse/keyboard from GStreamer window → forward to Mac via TCP
+/// # Display count
+/// Set `DUALLINK_DISPLAY_COUNT` to control how many virtual displays to expose
+/// (default 1, max 8).  Each display binds an independent UDP/TCP port pair:
+///   - Display 0: UDP 7878 / TCP 7879
+///   - Display 1: UDP 7880 / TCP 7881
+///   - Display n: UDP 7878+2n / TCP 7879+2n
+///
+/// # Flow (per display)
+/// 1. Bind UDP + TCP ports via `DualLinkReceiver::start_all`
+/// 2. Wait for `hello` handshake → obtain `StreamConfig`
+/// 3. Initialise the best available GStreamer display decoder
+/// 4. Receive → decode → display loop
+/// 5. Forward captured input events back to the Mac sender
 pub async fn run() -> Result<()> {
+    // ── Read display count from environment ────────────────────────────────
+    let display_count: u8 = std::env::var("DUALLINK_DISPLAY_COUNT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1)
+        .max(1)
+        .min(8);
+
     // ── Detect USB Ethernet for low-latency transport ──────────────────────
     if let Some(usb) = detect_usb_ethernet() {
         info!(
@@ -28,31 +43,67 @@ pub async fn run() -> Result<()> {
         info!("No USB Ethernet detected — using Wi-Fi transport");
     }
 
-    info!("Binding transport (UDP:7878 video, TCP:7879 signaling)...");
+    info!(
+        "Starting {} display stream(s) — binding transport ports...",
+        display_count
+    );
 
-    let (_recv, mut frame_rx, mut event_rx, input_sender, _startup) = DualLinkReceiver::start().await?;
+    let (_recv, channels, input_sender, _startup) =
+        DualLinkReceiver::start_all(display_count).await?;
 
-    info!("Waiting for macOS DualLink client to connect...");
-    info!("Enter the IP of this machine in the DualLink mac app and press Start Mirroring.");
+    info!(
+        "Waiting for macOS DualLink client to connect on {} port pair(s).",
+        channels.len()
+    );
+    info!("Enter this machine's IP in the DualLink mac app and press Start.");
 
-    // ── Wait for hello to get the session config ───────────────────────────
+    // ── Spawn one task per display ─────────────────────────────────────────
+    let mut handles = Vec::with_capacity(channels.len());
+    for ch in channels {
+        let is = input_sender.clone();
+        let handle = tokio::spawn(async move {
+            let idx = ch.display_index;
+            if let Err(e) = run_display(ch, is).await {
+                warn!("Display[{idx}] exited with error: {:#}", e);
+            }
+        });
+        handles.push(handle);
+    }
+
+    for h in handles {
+        let _ = h.await;
+    }
+
+    info!("All display streams exited.");
+    Ok(())
+}
+
+// ── Per-display loop ───────────────────────────────────────────────────────────
+
+async fn run_display(
+    ch: DisplayChannels,
+    input_sender: InputSender,
+) -> Result<()> {
+    let DisplayChannels { display_index, mut frame_rx, mut event_rx } = ch;
+
+    // ── Wait for hello handshake to get StreamConfig ───────────────────────
     let config = loop {
         match event_rx.recv().await {
             Some(SignalingEvent::SessionStarted { session_id, device_name, config, client_addr }) => {
                 info!(
-                    "Session started: id={} from='{}' addr={} config={:?}",
-                    session_id, device_name, client_addr, config
+                    "Display[{}] Session started: id={} from='{}' addr={} config={:?}",
+                    display_index, session_id, device_name, client_addr, config
                 );
                 break config;
             }
             Some(SignalingEvent::ClientDisconnected) => {
-                warn!("Client disconnected before hello — waiting again");
+                warn!("Display[{}] Client disconnected before hello — waiting again", display_index);
             }
             Some(other) => {
-                info!("Signaling event (pre-session): {:?}", other);
+                info!("Display[{}] Pre-session event: {:?}", display_index, other);
             }
             None => {
-                anyhow::bail!("Signaling channel closed before session started");
+                anyhow::bail!("Display[{}] Signaling channel closed before session started", display_index);
             }
         }
     };
@@ -63,17 +114,22 @@ pub async fn run() -> Result<()> {
 
     let display_decoder = tokio::task::spawn_blocking(move || {
         DecoderFactory::best_available_with_display(width, height)
-    }).await?
-    .map_err(|e| anyhow::anyhow!("Display decoder init failed: {}", e))?;
+    })
+    .await?
+    .map_err(|e| anyhow::anyhow!("Display[{}] decoder init failed: {}", display_index, e))?;
 
-    let hw = display_decoder.is_hardware_accelerated();
+    let hw   = display_decoder.is_hardware_accelerated();
     let elem = display_decoder.element_name().to_string();
-    info!("Display decoder ready: {} hw={} — video window should appear", elem, hw);
+    info!(
+        "Display[{}] decoder ready: {} hw={} — video window should appear",
+        display_index, elem, hw
+    );
 
-    // ── Dedicated decode+display+input thread (GStreamer is blocking) ──────
+    // ── Dedicated blocking thread for decode + display + input ─────────────
     let (decode_tx, mut decode_rx) = mpsc::channel::<EncodedFrame>(64);
     let push_errors = Arc::new(AtomicU64::new(0));
-    let pe = Arc::clone(&push_errors);
+    let pe  = Arc::clone(&push_errors);
+    let idx = display_index;
 
     let decode_handle = tokio::task::spawn_blocking(move || {
         while let Some(frame) = decode_rx.blocking_recv() {
@@ -83,48 +139,55 @@ pub async fn run() -> Result<()> {
                 Ok(()) => {
                     let n = display_decoder.frames_pushed();
                     if n == 1 {
-                        info!("First frame decoded and displayed!");
+                        info!("Display[{idx}] First frame decoded and displayed!");
                     }
                     if n % 300 == 0 {
-                        info!("Displayed {} frames so far", n);
+                        info!("Display[{idx}] Displayed {} frames", n);
                     }
                 }
                 Err(e) => {
                     let errs = pe.fetch_add(1, Ordering::Relaxed) + 1;
                     if errs <= 10 || errs % 100 == 0 {
-                        warn!("Display push error #{} ({} bytes, keyframe={}): {}", errs, sz, kf, e);
+                        warn!(
+                            "Display[{idx}] push error #{} ({} bytes keyframe={}): {}",
+                            errs, sz, kf, e
+                        );
                     }
                 }
             }
 
-            // Poll and forward input events from the GStreamer window
+            // Forward input events captured from the GStreamer window
             for event in display_decoder.poll_input_events() {
-                if let Err(_) = input_sender.try_send(event) {
-                    // Channel full or closed — drop event silently
-                }
+                let _ = input_sender.try_send(event);
             }
         }
-        info!("Decode+display thread exiting");
+        info!("Display[{idx}] decode+display thread exiting");
     });
 
-    // ── Main receive → display loop ────────────────────────────────────────
-    info!("Streaming — receiving and displaying frames...");
+    // ── Main async receive → decode loop ───────────────────────────────────
+    info!("Display[{}] Streaming — receiving and displaying frames...", display_index);
     let mut frames_received: u64 = 0;
+
     loop {
         tokio::select! {
             // Incoming encoded frame
             Some(frame) = frame_rx.recv() => {
                 frames_received += 1;
                 if frames_received <= 5 {
-                    debug!("Frame #{}: {} bytes keyframe={}", frames_received, frame.data.len(), frame.is_keyframe);
+                    tracing::debug!(
+                        "Display[{}] Frame #{}: {} bytes keyframe={}",
+                        display_index, frames_received, frame.data.len(), frame.is_keyframe
+                    );
                 }
                 if frames_received % 300 == 0 {
-                    let err = push_errors.load(Ordering::Relaxed);
-                    info!("Stats: received={} errors={}", frames_received, err);
+                    let errs = push_errors.load(Ordering::Relaxed);
+                    info!(
+                        "Display[{}] Stats: received={} errors={}",
+                        display_index, frames_received, errs
+                    );
                 }
-                // Send to blocking decode+display thread
                 if decode_tx.send(frame).await.is_err() {
-                    warn!("Decode+display thread gone — stopping");
+                    warn!("Display[{}] Decode thread gone — stopping", display_index);
                     break;
                 }
             }
@@ -133,16 +196,16 @@ pub async fn run() -> Result<()> {
             Some(event) = event_rx.recv() => {
                 match event {
                     SignalingEvent::SessionStopped { session_id } => {
-                        info!("Session {} stopped by sender — exiting", session_id);
+                        info!("Display[{}] Session {} stopped by sender", display_index, session_id);
                         break;
                     }
                     SignalingEvent::ClientDisconnected => {
-                        warn!("Sender disconnected — exiting");
+                        warn!("Display[{}] Sender disconnected", display_index);
                         break;
                     }
                     SignalingEvent::ConfigUpdated { config } => {
-                        info!("Config update received: {:?}", config);
-                        // TODO: Sprint 2 — reinitialise decoder/renderer on config change
+                        info!("Display[{}] Config update: {:?}", display_index, config);
+                        // TODO: Sprint 5C — reinitialise decoder on config change
                     }
                     _ => {}
                 }
@@ -152,11 +215,15 @@ pub async fn run() -> Result<()> {
         }
     }
 
-    // Cleanup: drop sender so decode thread exits
+    // Signal decode thread to stop
     drop(decode_tx);
     let _ = decode_handle.await;
 
-    let total_err = push_errors.load(Ordering::Relaxed);
-    info!("Receiver exited. received={} errors={}", frames_received, total_err);
+    let total_errs = push_errors.load(Ordering::Relaxed);
+    info!(
+        "Display[{}] Receiver exited. received={} errors={}",
+        display_index, frames_received, total_errs
+    );
     Ok(())
 }
+

@@ -41,23 +41,25 @@ final class AppState: ObservableObject {
     @Published var framesSent: UInt64 = 0
     @Published var lastError: String?
 
+    // Per-display fps and frames for multi-monitor UI
+    @Published var perDisplayFPS: [Double] = []
+    @Published var perDisplayFramesSent: [UInt64] = []
+
     // When true we are already tearing down — suppress cascading onStateChange teardown
     private var isTearingDown = false
 
-    // MARK: - Managers
+    // MARK: - Pipelines (one per active display)
 
-    let virtualDisplayManager = VirtualDisplayManager()
-    let screenCaptureManager  = ScreenCaptureManager()
-    let videoEncoder          = VideoEncoder()
-    let videoSender           = VideoSender()
-    let signalingClient       = SignalingClient()
+    private var pipelines: [DisplayStreamPipeline] = []
+
+    // MARK: - Shared managers (session-level, not per-display)
+
     let inputInjector         = InputInjectionManager()
     let transportDiscovery    = TransportDiscovery()
     let transportBenchmark    = TransportBenchmark()
 
-    // MARK: - Private
+    // MARK: - Private session state
 
-    private var fpsCounter = FPSCounter()
     private var sessionID: String = ""
     private var reconnectTask: Task<Void, Never>?
     private var lastHost: String = ""
@@ -66,20 +68,24 @@ final class AppState: ObservableObject {
     private var lastTransportMode: TransportSelection = .auto
     private var lastWifiHost: String? = nil
     private var lastPairingPin: String? = nil
+    private var lastDisplayCount: Int = 1
     private var activeConnectionMode: ConnectionMode = .wifi
     private var reconnectAttempt: Int = 0
     private let maxReconnectAttempts: Int = 5
 
     // MARK: - Connect & Stream
 
-    /// Full pipeline: virtual display → capture → encode → UDP send.
+    /// Full pipeline: virtual display(s) → capture → encode → UDP send.
+    ///
     /// - Parameters:
-    ///   - config: Stream parameters.
-    ///   - displayMode: Mirror (capture main screen) or Extend (create virtual display).
+    ///   - config: Stream parameters (applied to every display).
+    ///   - displayMode: Mirror (capture main) or Extend (create virtual displays).
+    ///   - displayCount: Number of independent display streams (1–2 for Phase 5B).
     ///   - transportMode: Auto, USB, or Wi-Fi.
-    ///   - wifiHost: Wi-Fi IP of the receiver (needed for Wi-Fi/Auto mode).
-    ///   - pairingPin: 6-digit PIN displayed by the Linux receiver (required for first connect).
+    ///   - wifiHost: Wi-Fi IP of the receiver.
+    ///   - pairingPin: 6-digit PIN displayed by the receiver (required for first connect).
     func connectAndStream(config: StreamConfig = .default, displayMode: DisplayMode = .extend,
+                          displayCount: Int = 1,
                           transportMode: TransportSelection = .auto, wifiHost: String? = nil,
                           pairingPin: String? = nil) async {
         guard case .idle = connectionState else { return }
@@ -87,10 +93,15 @@ final class AppState: ObservableObject {
         sessionID = UUID().uuidString
         lastConfig = config
         lastDisplayMode = displayMode
+        lastDisplayCount = max(1, min(displayCount, 2))
         lastTransportMode = transportMode
         lastWifiHost = wifiHost
         lastPairingPin = pairingPin
         reconnectAttempt = 0
+
+        // Reset per-display stats arrays
+        perDisplayFPS = Array(repeating: 0.0, count: lastDisplayCount)
+        perDisplayFramesSent = Array(repeating: 0, count: lastDisplayCount)
 
         do {
             // ── 0. Resolve transport endpoint ──────────────────────────────────
@@ -99,7 +110,6 @@ final class AppState: ObservableObject {
 
             switch transportMode {
             case .usb:
-                // USB only — probe USB Ethernet
                 guard let usb = transportDiscovery.detectUSBEthernet() else {
                     throw DualLinkError.streamError("No USB Ethernet detected. Is the USB-C cable connected and gadget configured?")
                 }
@@ -112,7 +122,6 @@ final class AppState: ObservableObject {
                 print("[DualLink] Transport: USB via \(usb.interfaceName) → \(host)")
 
             case .wifi:
-                // Wi-Fi only
                 guard let wifiHost, !wifiHost.isEmpty else {
                     throw DualLinkError.streamError("No Wi-Fi IP provided")
                 }
@@ -121,13 +130,11 @@ final class AppState: ObservableObject {
                 print("[DualLink] Transport: Wi-Fi → \(host)")
 
             case .auto:
-                // Try USB first, fallback to Wi-Fi
                 if let endpoint = await transportDiscovery.bestEndpoint(wifiHost: wifiHost) {
                     host = endpoint.host
                     connMode = endpoint.mode
                     print("[DualLink] Transport: Auto selected \(connMode.rawValue) → \(host) (latency ~\(Int(endpoint.latencyEstimate * 1000))ms)")
                 } else if let wifiHost, !wifiHost.isEmpty {
-                    // No endpoints discovered but we have a Wi-Fi host — try it directly
                     host = wifiHost
                     connMode = .wifi
                     print("[DualLink] Transport: Auto fallback to Wi-Fi → \(host)")
@@ -138,106 +145,79 @@ final class AppState: ObservableObject {
 
             lastHost = host
             activeConnectionMode = connMode
-            // ── 1. Connect Signaling (TCP) ─────────────────────────────────────
+
+            // ── 1. Show connecting state ─────────────────────────────────────
             connectionState = .connecting(
                 peer: PeerInfo(id: sessionID, name: host, address: host, port: 7879),
                 attempt: 1
             )
-            await signalingClient.configure(
-                onStateChange: { [weak self] state in
-                    guard let self else { return }
-                    if case .failed(let reason) = state {
-                        Task { @MainActor in
-                            guard !self.isTearingDown else { return }
-                            if case .streaming = self.connectionState {
-                                print("[DualLink] Connection lost: \(reason) — attempting reconnect")
-                                await self.attemptReconnect()
-                            } else if case .reconnecting = self.connectionState {
-                                // Already reconnecting
-                            } else {
-                                self.lastError = "Signaling failed: \(reason)"
-                                await self.teardown()
-                                self.connectionState = .error(reason: reason)
+
+            // ── 2. Create and start pipelines ────────────────────────────────
+            pipelines.removeAll()
+            for idx in 0..<lastDisplayCount {
+                let pipeline = DisplayStreamPipeline(displayIndex: UInt8(idx))
+                pipelines.append(pipeline)
+
+                let capturedIdx = idx
+                let stateHandler: (@Sendable (SignalingClientState) -> Void)?
+                if idx == 0 {
+                    stateHandler = { [weak self] state in
+                        guard let self else { return }
+                        if case .failed(let reason) = state {
+                            Task { @MainActor in
+                                guard !self.isTearingDown else { return }
+                                if case .streaming = self.connectionState {
+                                    print("[DualLink] Connection lost: \(reason) — attempting reconnect")
+                                    await self.attemptReconnect()
+                                } else if case .reconnecting = self.connectionState {
+                                    // Already reconnecting
+                                } else {
+                                    self.lastError = "Signaling failed: \(reason)"
+                                    await self.teardown()
+                                    self.connectionState = .error(reason: reason)
+                                }
                             }
                         }
                     }
-                },
-                onInputEvent: { [weak self] event in
-                    guard let self else { return }
-                    print("[DualLink] Input event received: \(event)")
-                    self.inputInjector.inject(event: event)
+                } else {
+                    stateHandler = nil
                 }
-            )
-            try await signalingClient.connect(host: host)
-
-            // ── 2. Display setup (depends on mode) ───────────────────────────
-            let captureID: CGDirectDisplayID
-            switch displayMode {
-            case .extend:
-                // Create virtual display and capture it (screen extension)
-                try await virtualDisplayManager.create(
-                    resolution: config.resolution,
-                    refreshRate: config.targetFPS
+                try await pipeline.start(
+                    host: host,
+                    displayMode: (idx == 0) ? displayMode : .extend,
+                    config: config,
+                    pairingPin: pairingPin,
+                    sessionID: sessionID,
+                    onFrameSent: { [weak self] in
+                        guard let self else { return }
+                        Task { @MainActor in
+                            if capturedIdx < self.pipelines.count {
+                                self.perDisplayFPS[capturedIdx] = self.pipelines[capturedIdx].fps
+                                self.perDisplayFramesSent[capturedIdx] = self.pipelines[capturedIdx].framesSent
+                            }
+                            self.streamFPS = self.pipelines.reduce(0) { $0 + $1.fps }
+                            self.framesSent = self.pipelines.reduce(0) { $0 + $1.framesSent }
+                        }
+                    },
+                    onInputEvent: { [weak self] event in
+                        guard let self else { return }
+                        self.inputInjector.inject(event: event)
+                    },
+                    onSignalingStateChange: stateHandler
                 )
-                guard let virtualDisplayID = virtualDisplayManager.activeDisplayID else {
-                    throw DualLinkError.streamError("Virtual display ID unavailable")
-                }
-                captureID = virtualDisplayID
-                inputInjector.configure(displayID: virtualDisplayID)
-                print("[DualLink] Extend mode: capturing virtual display \(virtualDisplayID)")
 
-            case .mirror:
-                // No virtual display needed — capture the main screen directly
-                captureID = CGMainDisplayID()
-                inputInjector.configure(displayID: captureID)
-                print("[DualLink] Mirror mode: capturing main display \(captureID)")
-            }
-
-            // ── 3. Configure Video Encoder ─────────────────────────────────
-            try videoEncoder.configure(config: config)
-
-            // ── 4. Connect Video Sender (UDP) ─────────────────────────────
-            try await videoSender.connect(host: host)
-
-            // ── 5. Wire Encoder → Sender ────────────────────────────────────
-            videoEncoder.onEncodedData = { [weak self] nalData, pts, isKeyframe in
-                guard let self else { return }
-                Task {
-                    let senderState = await self.videoSender.state
-                    guard senderState == .ready else {
-                        self.videoEncoder.notifyFrameDropped()
-                        return
-                    }
-                    await self.videoSender.send(
-                        nalData: nalData,
-                        presentationTime: pts,
-                        isKeyframe: isKeyframe
-                    )
-                    self.videoEncoder.notifyFrameSent()
-                    let sent = await self.videoSender.framesSent
-                    if sent == 1 {
-                        print("[DualLink] First encoded frame sent: \(nalData.count) bytes keyframe=\(isKeyframe)")
-                    }
-                    await MainActor.run {
-                        self.framesSent = sent
-                        self.streamFPS = self.fpsCounter.tick()
+                // Configure input injection for display 0
+                if idx == 0 {
+                    if displayMode == .extend,
+                       let vid = pipeline.virtualDisplayManager.activeDisplayID {
+                        inputInjector.configure(displayID: vid)
+                    } else {
+                        inputInjector.configure(displayID: CGMainDisplayID())
                     }
                 }
             }
 
-            // ── 6. Start Screen Capture ───────────────────────────────────
-            try await screenCaptureManager.startCapture(displayID: captureID, config: config) { [weak self] frame in
-                guard let self else { return }
-                self.videoEncoder.encode(
-                    pixelBuffer: frame.pixelBuffer,
-                    presentationTime: frame.presentationTime
-                )
-            }
-
-            // ── 7. Send Hello handshake ──────────────────────────────────
-            try await signalingClient.sendHello(sessionID: sessionID, config: config, pairingPin: pairingPin)
-
-            // ── 8. Update UI state ─────────────────────────────────────────
+            // ── 3. Update UI state ───────────────────────────────────────────
             connectionState = .streaming(session: SessionInfo(
                 sessionID: sessionID,
                 peer: PeerInfo(id: sessionID, name: host, address: host, port: 7878),
@@ -245,7 +225,7 @@ final class AppState: ObservableObject {
                 connectionMode: connMode
             ))
 
-            // ── 9. Background: measure transport latency ───────────────────
+            // ── 4. Background: benchmark transport ───────────────────────────
             Task.detached { [weak self] in
                 guard let self else { return }
                 let result = await self.transportBenchmark.measureLatency(
@@ -267,7 +247,9 @@ final class AppState: ObservableObject {
     func stopStreaming() async {
         reconnectTask?.cancel()
         reconnectTask = nil
-        try? await signalingClient.sendStop(sessionID: sessionID)
+        for pipeline in pipelines {
+            try? await pipeline.signalingClient.sendStop(sessionID: sessionID)
+        }
         await teardown()
     }
 
@@ -286,70 +268,75 @@ final class AppState: ObservableObject {
         connectionState = .reconnecting(peer: peer, attempt: reconnectAttempt)
         print("[DualLink] Reconnect attempt \(reconnectAttempt)/\(maxReconnectAttempts)")
 
-        // Tear down current pipeline but don't go idle
+        // Partial teardown — keep virtual displays alive
         isTearingDown = true
-        try? await screenCaptureManager.stopCapture()
-        videoEncoder.onEncodedData = nil
-        videoEncoder.invalidate()
-        await videoSender.disconnect()
-        await signalingClient.disconnect()
-        // Keep virtual display alive across reconnects in extend mode
+        for pipeline in pipelines {
+            await pipeline.stopKeepDisplay()
+        }
         isTearingDown = false
 
         // Exponential backoff: 1s, 2s, 4s, 8s, 16s
         let delaySec = UInt64(pow(2.0, Double(reconnectAttempt - 1)))
         print("[DualLink] Waiting \(delaySec)s before reconnect...")
         try? await Task.sleep(nanoseconds: delaySec * 1_000_000_000)
-
         guard !Task.isCancelled else { return }
 
-        // ── Fallback: try to re-discover best transport ───────────────────
+        // Re-discover best transport
         var reconnectHost = lastHost
         if lastTransportMode == .auto || lastTransportMode == .usb {
-            // Re-check if USB is still available; if not, fall back to Wi-Fi
             if let endpoint = await transportDiscovery.bestEndpoint(wifiHost: lastWifiHost) {
                 reconnectHost = endpoint.host
                 activeConnectionMode = endpoint.mode
-                print("[DualLink] Reconnect: using \(endpoint.mode.rawValue) → \(reconnectHost)")
             } else if let wifiHost = lastWifiHost, !wifiHost.isEmpty {
-                // USB gone, fall back to Wi-Fi
                 reconnectHost = wifiHost
                 activeConnectionMode = .wifi
-                print("[DualLink] Reconnect: USB unavailable, falling back to Wi-Fi → \(reconnectHost)")
             }
         }
         lastHost = reconnectHost
 
         do {
-            try await signalingClient.connect(host: lastHost)
-            try videoEncoder.configure(config: lastConfig)
-            try await videoSender.connect(host: lastHost)
-
-            videoEncoder.onEncodedData = { [weak self] nalData, pts, isKeyframe in
-                guard let self else { return }
-                Task {
-                    await self.videoSender.send(nalData: nalData, presentationTime: pts, isKeyframe: isKeyframe)
-                    let sent = await self.videoSender.framesSent
-                    await MainActor.run {
-                        self.framesSent = sent
-                        self.streamFPS = self.fpsCounter.tick()
+            for (idx, pipeline) in pipelines.enumerated() {
+                let capturedIdx = idx
+                let reconnStateHandler: (@Sendable (SignalingClientState) -> Void)?
+                if idx == 0 {
+                    reconnStateHandler = { [weak self] state in
+                        guard let self else { return }
+                        if case .failed(let reason) = state {
+                            Task { @MainActor in
+                                guard !self.isTearingDown else { return }
+                                if case .streaming = self.connectionState {
+                                    await self.attemptReconnect()
+                                }
+                            }
+                        }
                     }
+                } else {
+                    reconnStateHandler = nil
                 }
+                try await pipeline.start(
+                    host: lastHost,
+                    displayMode: (idx == 0) ? lastDisplayMode : .extend,
+                    config: lastConfig,
+                    pairingPin: lastPairingPin,
+                    sessionID: sessionID,
+                    onFrameSent: { [weak self] in
+                        guard let self else { return }
+                        Task { @MainActor in
+                            if capturedIdx < self.pipelines.count {
+                                self.perDisplayFPS[capturedIdx] = self.pipelines[capturedIdx].fps
+                                self.perDisplayFramesSent[capturedIdx] = self.pipelines[capturedIdx].framesSent
+                            }
+                            self.streamFPS = self.pipelines.reduce(0) { $0 + $1.fps }
+                            self.framesSent = self.pipelines.reduce(0) { $0 + $1.framesSent }
+                        }
+                    },
+                    onInputEvent: { [weak self] event in
+                        guard let self else { return }
+                        self.inputInjector.inject(event: event)
+                    },
+                    onSignalingStateChange: reconnStateHandler
+                )
             }
-
-            // Re-capture the same display
-            let captureID: CGDirectDisplayID
-            if lastDisplayMode == .extend, let vid = virtualDisplayManager.activeDisplayID {
-                captureID = vid
-            } else {
-                captureID = CGMainDisplayID()
-            }
-            try await screenCaptureManager.startCapture(displayID: captureID, config: lastConfig) { [weak self] frame in
-                guard let self else { return }
-                self.videoEncoder.encode(pixelBuffer: frame.pixelBuffer, presentationTime: frame.presentationTime)
-            }
-
-            try await signalingClient.sendHello(sessionID: sessionID, config: lastConfig, pairingPin: lastPairingPin)
 
             reconnectAttempt = 0
             connectionState = .streaming(session: SessionInfo(
@@ -365,34 +352,21 @@ final class AppState: ObservableObject {
         }
     }
 
-    // MARK: - Private
+    // MARK: - Teardown
 
     private func teardown() async {
         guard !isTearingDown else { return }
         isTearingDown = true
         defer { isTearingDown = false }
-        try? await screenCaptureManager.stopCapture()
-        videoEncoder.onEncodedData = nil
-        videoEncoder.invalidate()
-        await videoSender.disconnect()
-        await signalingClient.disconnect()
-        await virtualDisplayManager.destroy()
+        for pipeline in pipelines {
+            await pipeline.stop()
+        }
+        pipelines.removeAll()
         connectionState = .idle
         streamFPS = 0
         framesSent = 0
+        perDisplayFPS = []
+        perDisplayFramesSent = []
     }
 }
 
-// MARK: - FPSCounter
-
-/// Lightweight rolling FPS counter.
-private struct FPSCounter {
-    private var timestamps: [Date] = []
-
-    mutating func tick() -> Double {
-        let now = Date()
-        timestamps.append(now)
-        timestamps = timestamps.filter { now.timeIntervalSince($0) < 1.0 }
-        return Double(timestamps.count)
-    }
-}

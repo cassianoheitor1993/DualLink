@@ -1,0 +1,21 @@
+[package]
+name        = "duallink-capture-linux"
+description = "Linux screen capture for DualLink sender (PipeWire / XShm)"
+edition.workspace = true
+version.workspace  = true
+authors.workspace  = true
+license.workspace  = true
+
+[dependencies]
+duallink-core = { workspace = true }
+anyhow        = { workspace = true }
+tracing       = { workspace = true }
+
+# PipeWire portal (Wayland / PipeWire)
+[target.'cfg(target_os = "linux")'.dependencies]
+ashpd = { version = "0.9" }
+
+[features]
+default   = ["pipewire"]
+pipewire  = []
+xshm      = []           # X11 XShm fallback (future)

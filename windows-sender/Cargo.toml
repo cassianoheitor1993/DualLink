@@ -1,0 +1,53 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/duallink-capture-windows",
+    "crates/duallink-windows-sender",
+]
+
+[workspace.package]
+edition = "2021"
+version  = "0.1.0"
+authors  = ["DualLink Contributors"]
+license  = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+duallink-core = { path = "../linux-receiver/crates/duallink-core" }
+
+anyhow      = "1"
+tokio       = { version = "1", features = ["full"] }
+tracing     = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Windows.Graphics.Capture API
+[workspace.dependencies.windows]
+version  = "0.58"
+features = [
+    "Graphics_Capture",
+    "Graphics_DirectX",
+    "Graphics_DirectX_Direct3D11",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_System_WinRT_Graphics_Capture",
+    "Foundation",
+]
+
+# GStreamer encoding pipeline
+gstreamer       = { version = "0.23" }
+gstreamer-app   = { version = "0.23" }
+gstreamer-video = { version = "0.23" }
+
+# Virtual display (parsec-vdd equivalent — planned)
+# parsec-vdd = { git = "https://github.com/nefarius/ViGEm.NET", optional = true }
+
+# Network
+bytes       = "1"
+serde       = { version = "1", features = ["derive"] }
+serde_json  = "1"
+rcgen       = "0.13"
+rustls      = { version = "0.23", features = ["ring"] }
+tokio-rustls = "0.26"
+
+# UI (egui with software renderer for broad Windows compatibility)
+eframe = { version = "0.29", features = ["default_fonts", "glow"] }
+egui   = "0.29"

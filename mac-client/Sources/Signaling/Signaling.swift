@@ -173,13 +173,15 @@ public actor SignalingClient {
 
     // MARK: - Connect
 
-    public func connect(host: String, port: UInt16 = 7879) async throws {
+    /// - Parameter displayIndex: Zero-based display index; auto-resolves port as 7879 + 2*n when `port` is nil.
+    public func connect(host: String, port: UInt16? = nil, displayIndex: UInt8 = 0) async throws {
+        let resolvedPort = port ?? (7879 + UInt16(displayIndex) * 2)
         disconnect()
         setState(.connecting)
 
         let endpoint = NWEndpoint.hostPort(
             host: NWEndpoint.Host(host),
-            port: NWEndpoint.Port(rawValue: port)!
+            port: NWEndpoint.Port(rawValue: resolvedPort)!
         )
 
         // ── TLS configuration (accept self-signed certs — TOFU model) ─────

@@ -1,0 +1,42 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/duallink-capture-linux",
+    "crates/duallink-linux-sender",
+]
+
+[workspace.package]
+edition = "2021"
+version  = "0.1.0"
+authors  = ["DualLink Contributors"]
+license  = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+# Shared types (resolution, codec, input events, etc.)
+duallink-core = { path = "../linux-receiver/crates/duallink-core" }
+
+anyhow      = "1"
+tokio       = { version = "1", features = ["full"] }
+tracing     = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Screen capture
+ashpd   = { version = "0.9", optional = true }   # PipeWire portal
+scrap   = { version = "0.5", optional = true }    # X11 / XShm fallback
+
+# GStreamer encoding pipeline
+gstreamer       = { version = "0.23" }
+gstreamer-app   = { version = "0.23" }
+gstreamer-video = { version = "0.23" }
+
+# Network (UDP + TLS signaling — mirrors mac-client Streaming/Signaling)
+bytes       = "1"
+serde       = { version = "1", features = ["derive"] }
+serde_json  = "1"
+rcgen       = "0.13"
+rustls      = { version = "0.23", features = ["ring"] }
+tokio-rustls = "0.26"
+
+# UI
+eframe = { version = "0.29", features = ["default_fonts", "glow"] }
+egui   = "0.29"

@@ -413,6 +413,19 @@ pub enum SignalingEvent {
     ClientDisconnected,
 }
 
+// ── Multi-display channel bundle ───────────────────────────────────────────────
+
+/// Frame and signaling channels for one display stream.
+/// Returned by [`DualLinkReceiver::start_all`].
+pub struct DisplayChannels {
+    /// Decoded frame stream for this display index.
+    pub frame_rx: mpsc::Receiver<EncodedFrame>,
+    /// Signaling events for this display index.
+    pub event_rx: mpsc::Receiver<SignalingEvent>,
+    /// Zero-based display index (matches DLNK header byte [17]).
+    pub display_index: u8,
+}
+
 // ── DualLinkReceiver ───────────────────────────────────────────────────────────
 
 /// Manages UDP video reception + TCP signaling in background tasks.
@@ -483,6 +496,7 @@ impl DualLinkReceiver {
         let startup_fingerprint = identity.fingerprint.clone();
         let pin = pairing_pin;
         let startup_pin = pin.clone();
+        let shared_input = Arc::new(tokio::sync::Mutex::new(input_rx));
 
         // UDP receiver task
         let udp = UdpSocket::bind(format!("0.0.0.0:{VIDEO_PORT}")).await?;
@@ -493,12 +507,91 @@ impl DualLinkReceiver {
         // TLS signaling task
         let tcp = TcpListener::bind(format!("0.0.0.0:{SIGNALING_PORT}")).await?;
         info!("TLS signaling listener bound on 0.0.0.0:{SIGNALING_PORT}");
-        tokio::spawn(async move { run_signaling_server(tcp, event_tx, input_rx, acceptor, pin).await });
+        tokio::spawn(async move {
+            run_signaling_server_shared(tcp, event_tx, shared_input, acceptor, pin).await
+        });
 
         Ok((
             Self { frames_received: counter },
             frame_rx,
             event_rx,
+            InputSender { tx: input_tx },
+            StartupInfo { pairing_pin: startup_pin, tls_fingerprint: startup_fingerprint },
+        ))
+    }
+
+    /// Bind N display port pairs and start independent background tasks for each.
+    ///
+    /// All displays share a single TLS identity, pairing PIN, and `InputSender`.
+    /// Per-display data comes back through the returned `Vec<DisplayChannels>`.
+    ///
+    /// Port mapping: display `n` uses UDP `7878 + 2n` / TCP `7879 + 2n`.
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// # tokio_test::block_on(async {
+    /// let (_recv, channels, input_tx, _info) =
+    ///     duallink_transport::DualLinkReceiver::start_all(2).await.unwrap();
+    /// for ch in channels {
+    ///     println!("Display {} ready", ch.display_index);
+    /// }
+    /// # })
+    /// ```
+    pub async fn start_all(display_count: u8) -> anyhow::Result<(
+        Self,
+        Vec<DisplayChannels>,
+        InputSender,
+        StartupInfo,
+    )> {
+        let n_displays = display_count.max(1).min(8);
+
+        // ── Shared TLS identity + pairing PIN ─────────────────────────────
+        let identity = generate_tls_identity()?;
+        info!("TLS certificate fingerprint: {}", identity.fingerprint);
+
+        let pairing_pin = generate_pairing_pin();
+        info!("╔══════════════════════════════════════╗");
+        info!("║  DualLink Pairing PIN:  {}        ║", pairing_pin);
+        info!("╚══════════════════════════════════════╝");
+        info!("  Displays: {}", n_displays);
+
+        let (input_tx, input_rx) = mpsc::channel::<InputEvent>(256);
+        // Shared across all N signaling servers — only display-0 responds actively
+        let shared_input = Arc::new(tokio::sync::Mutex::new(input_rx));
+        let counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
+
+        let startup_pin = pairing_pin.clone();
+        let startup_fingerprint = identity.fingerprint.clone();
+
+        let mut channels = Vec::with_capacity(n_displays as usize);
+
+        for n in 0..n_displays {
+            let (frame_tx, frame_rx) = mpsc::channel::<EncodedFrame>(64);
+            let (event_tx, event_rx) = mpsc::channel::<SignalingEvent>(16);
+
+            let vp = video_port(n);
+            let sp = signaling_port(n);
+
+            let udp = UdpSocket::bind(format!("0.0.0.0:{vp}")).await?;
+            info!("Display[{n}] UDP receiver bound on 0.0.0.0:{vp}");
+            let counter_clone = Arc::clone(&counter);
+            tokio::spawn(async move { run_udp_receiver(udp, frame_tx, counter_clone).await });
+
+            let tcp = TcpListener::bind(format!("0.0.0.0:{sp}")).await?;
+            info!("Display[{n}] TLS signaling bound on 0.0.0.0:{sp}");
+            let acceptor = identity.acceptor.clone();
+            let pin = pairing_pin.clone();
+            let irx = Arc::clone(&shared_input);
+            tokio::spawn(async move {
+                run_signaling_server_shared(tcp, event_tx, irx, acceptor, pin).await
+            });
+
+            channels.push(DisplayChannels { frame_rx, event_rx, display_index: n });
+        }
+
+        Ok((
+            Self { frames_received: counter },
+            channels,
             InputSender { tx: input_tx },
             StartupInfo { pairing_pin: startup_pin, tls_fingerprint: startup_fingerprint },
         ))
@@ -538,16 +631,15 @@ async fn run_udp_receiver(
 
 // ── TCP signaling task ─────────────────────────────────────────────────────────
 
-async fn run_signaling_server(
+async fn run_signaling_server_shared(
     listener: TcpListener,
     event_tx: mpsc::Sender<SignalingEvent>,
-    input_rx: mpsc::Receiver<InputEvent>,
+    input_rx: Arc<tokio::sync::Mutex<mpsc::Receiver<InputEvent>>>,
     acceptor: TlsAcceptor,
     pairing_pin: String,
 ) {
-    // We only support one client at a time — the input_rx is moved into the
-    // first accepted connection's write task.
-    let input_rx = Arc::new(tokio::sync::Mutex::new(input_rx));
+    // We only support one client at a time — the input_rx is shared across displays.
+    let input_rx = input_rx;
     loop {
         match listener.accept().await {
             Ok((stream, addr)) => {

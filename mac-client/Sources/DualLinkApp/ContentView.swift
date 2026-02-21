@@ -21,6 +21,7 @@ struct ContentView: View {
     @State private var selectedResolution: Resolution = .fhd
     @State private var selectedCodec: VideoCodec = .h264
     @State private var transportMode: TransportSelection = .auto
+    @State private var displayCount: Int = 1
 
     var body: some View {
         VStack(spacing: 0) {
@@ -36,7 +37,8 @@ struct ContentView: View {
                     displayMode: $displayMode,
                     selectedResolution: $selectedResolution,
                     selectedCodec: $selectedCodec,
-                    transportMode: $transportMode
+                    transportMode: $transportMode,
+                    displayCount: $displayCount
                 )
                 Divider()
             }
@@ -47,7 +49,8 @@ struct ContentView: View {
                 displayMode: displayMode,
                 selectedResolution: selectedResolution,
                 selectedCodec: selectedCodec,
-                transportMode: transportMode
+                transportMode: transportMode,
+                displayCount: displayCount
             )
         }
         .frame(width: 380)
@@ -72,6 +75,7 @@ private struct ConnectView: View {
     @Binding var selectedResolution: Resolution
     @Binding var selectedCodec: VideoCodec
     @Binding var transportMode: TransportSelection
+    @Binding var displayCount: Int
     @FocusState private var isFocused: Bool
 
     var body: some View {
@@ -164,6 +168,20 @@ private struct ConnectView: View {
             }
             .toggleStyle(.switch)
             .controlSize(.small)
+
+            // Display count (only relevant for Extend mode)
+            if displayMode == .extend {
+                HStack(spacing: 8) {
+                    Image(systemName: displayCount == 2 ? "display.2" : "display")
+                        .foregroundStyle(.blue)
+                    Picker("", selection: $displayCount) {
+                        Text("1 Display").tag(1)
+                        Text("2 Displays").tag(2)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                }
+            }
         }
         .padding(.horizontal)
         .padding(.vertical, 10)
@@ -244,7 +262,18 @@ private struct StatusView: View {
                 StreamingStatusRow(label: "Connected to", value: session.peer.name)
                 StreamingStatusRow(label: "Mode", value: session.connectionMode == .wifi ? "Wi-Fi" : "USB")
                 StreamingStatusRow(label: "Resolution", value: "\(session.config.resolution.width)×\(session.config.resolution.height)")
-                StreamingStatusRow(label: "FPS", value: String(format: "%.0f", appState.streamFPS))
+                if appState.perDisplayFPS.count > 1 {
+                    // Multi-display: show individual FPS per display
+                    ForEach(Array(appState.perDisplayFPS.enumerated()), id: \.offset) { idx, fps in
+                        StreamingStatusRow(
+                            label: "Display \(idx) FPS",
+                            value: String(format: "%.0f", fps)
+                        )
+                    }
+                    StreamingStatusRow(label: "Total FPS", value: String(format: "%.0f", appState.streamFPS))
+                } else {
+                    StreamingStatusRow(label: "FPS", value: String(format: "%.0f", appState.streamFPS))
+                }
                 StreamingStatusRow(label: "Frames sent", value: "\(appState.framesSent)")
                 StreamingStatusRow(label: "Bitrate", value: "\(session.config.maxBitrateBps / 1_000_000) Mbps")
                 StreamingStatusRow(label: "Transport", value: session.connectionMode.rawValue.uppercased())
@@ -310,6 +339,7 @@ private struct ControlsView: View {
     let selectedResolution: Resolution
     let selectedCodec: VideoCodec
     let transportMode: TransportSelection
+    let displayCount: Int
 
     var body: some View {
         HStack(spacing: 8) {
@@ -332,14 +362,22 @@ private struct ControlsView: View {
                         await appState.connectAndStream(
                             config: config,
                             displayMode: displayMode,
+                            displayCount: displayCount,
                             transportMode: transportMode,
                             wifiHost: wifiHost,
                             pairingPin: pin
                         )
                     }
                 } label: {
-                    let label = displayMode == .extend ? "Start Extending" : "Start Mirroring"
-                    Label(label, systemImage: "play.fill")
+                    let label: String
+                    if displayMode == .mirror {
+                        label = "Start Mirroring"
+                    } else if displayCount == 2 {
+                        label = "Start 2 Displays"
+                    } else {
+                        label = "Start Extending"
+                    }
+                    return Label(label, systemImage: "play.fill")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)

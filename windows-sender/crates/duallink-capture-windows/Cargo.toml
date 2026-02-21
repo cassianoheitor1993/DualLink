@@ -1,0 +1,19 @@
+[package]
+name        = "duallink-capture-windows"
+description = "Windows screen capture for DualLink sender (Windows.Graphics.Capture)"
+edition.workspace = true
+version.workspace  = true
+authors.workspace  = true
+license.workspace  = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+duallink-core = { workspace = true }
+anyhow        = { workspace = true }
+tracing       = { workspace = true }
+windows       = { workspace = true }
+
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+# No-op stubs on non-Windows for CI cross-compile checks
+duallink-core = { workspace = true }
+anyhow        = { workspace = true }
+tracing       = { workspace = true }

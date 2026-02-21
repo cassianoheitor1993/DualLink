@@ -163,6 +163,7 @@ public actor VideoSender {
 
     private var connection: NWConnection?
     private var frameSeq: UInt32 = 0
+    private var displayIndex: UInt8 = 0
     private let sendQueue = DispatchQueue(label: "com.duallink.video-sender", qos: .userInteractive)
 
     // MARK: - Init
@@ -182,14 +183,18 @@ public actor VideoSender {
 
     /// Opens a UDP "connection" to the receiver.
     /// Network.framework UDP connections are soft — no actual handshake.
-    public func connect(host: String, port: UInt16 = 7878) async throws {
+    /// - Parameter displayIndex: Zero-based display index; determines port (7878 + 2*n)
+    ///   and the `display_index` field injected into every DLNK header.
+    public func connect(host: String, port: UInt16? = nil, displayIndex: UInt8 = 0) async throws {
+        let resolvedPort = port ?? videoPort(displayIndex: displayIndex)
+        self.displayIndex = displayIndex
         disconnect()
         state = .connecting
         notifyState()
 
         let endpoint = NWEndpoint.hostPort(
             host: NWEndpoint.Host(host),
-            port: NWEndpoint.Port(rawValue: port)!
+            port: NWEndpoint.Port(rawValue: resolvedPort)!
         )
         let conn = NWConnection(to: endpoint, using: .udp)
         connection = conn
@@ -244,7 +249,8 @@ public actor VideoSender {
             nalData: nalData,
             frameSeq: seq,
             ptsMs: ptsMs,
-            isKeyframe: isKeyframe
+            isKeyframe: isKeyframe,
+            displayIndex: displayIndex
         )
 
         var totalBytes: Int = 0

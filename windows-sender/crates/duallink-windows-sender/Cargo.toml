@@ -27,3 +27,6 @@ gstreamer        = { workspace = true }
 gstreamer-app    = { workspace = true }
 hostname         = { workspace = true }
 mdns-sd          = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true }

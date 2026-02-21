@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::Result;
-use duallink_core::{EncodedFrame, detect_usb_ethernet};
+use duallink_core::{EncodedFrame, StreamConfig, detect_usb_ethernet};
 use duallink_decoder::DecoderFactory;
 use duallink_discovery::{DualLinkAdvertiser, detect_local_ip};
 use duallink_transport::{DualLinkReceiver, DisplayChannels, InputSender, SignalingEvent, SIGNALING_PORT};
@@ -108,12 +108,22 @@ async fn run_display(
 
     let mut session_count: u32 = 0;
 
+    // Pending config forwarded from a mid-session ConfigUpdated event (hot-reload).
+    // When set, the next 'reconnect iteration uses it instead of waiting for a new hello.
+    let mut pending_config: Option<StreamConfig> = None;
+
     // ── Reconnect loop: one iteration per sender session ──────────────────
     'reconnect: loop {
         if session_count == 0 {
             info!(
                 "Display[{}] Waiting for sender to connect...",
                 display_index
+            );
+        } else if pending_config.is_some() {
+            // Hot-reload path: session is still alive, just reinitialise the decoder.
+            info!(
+                "Display[{}] Session {} — hot-reloading decoder (resolution change)",
+                display_index, session_count
             );
         } else {
             info!(
@@ -124,41 +134,53 @@ async fn run_display(
             tokio::time::sleep(Duration::from_millis(300)).await;
         }
 
-        // ── Wait for hello handshake to get StreamConfig ───────────────
-        let config = loop {
-            match event_rx.recv().await {
-                Some(SignalingEvent::SessionStarted {
-                    session_id,
-                    device_name,
-                    config,
-                    client_addr,
-                }) => {
-                    session_count += 1;
-                    info!(
-                        "Display[{}] Session #{} started: id={} from='{}' addr={} config={:?}",
-                        display_index, session_count, session_id,
-                        device_name, client_addr, config
-                    );
-                    break config;
+        // ── Obtain StreamConfig: pending hot-reload config or wait for hello ──
+        let config = if let Some(cfg) = pending_config.take() {
+            // Hot-reload: re-initialise decoder with the new resolution from ConfigUpdated,
+            // without waiting for a new ClientHello (the TCP session is still alive).
+            info!(
+                "Display[{}] Hot-reloading decoder with updated config: {:?}",
+                display_index, cfg
+            );
+            cfg
+        } else {
+            // Normal path: wait for the sender's hello handshake.
+            let cfg = loop {
+                match event_rx.recv().await {
+                    Some(SignalingEvent::SessionStarted {
+                        session_id,
+                        device_name,
+                        config,
+                        client_addr,
+                    }) => {
+                        session_count += 1;
+                        info!(
+                            "Display[{}] Session #{} started: id={} from='{}' addr={} config={:?}",
+                            display_index, session_count, session_id,
+                            device_name, client_addr, config
+                        );
+                        break config;
+                    }
+                    Some(SignalingEvent::ClientDisconnected) => {
+                        warn!(
+                            "Display[{}] Client disconnected before hello — waiting again",
+                            display_index
+                        );
+                    }
+                    Some(other) => {
+                        tracing::debug!("Display[{}] Pre-session event: {:?}", display_index, other);
+                    }
+                    None => {
+                        // Channel closed permanently — no more connections possible
+                        info!(
+                            "Display[{}] Signaling channel closed (total sessions: {}). Exiting.",
+                            display_index, session_count
+                        );
+                        break 'reconnect;
+                    }
                 }
-                Some(SignalingEvent::ClientDisconnected) => {
-                    warn!(
-                        "Display[{}] Client disconnected before hello — waiting again",
-                        display_index
-                    );
-                }
-                Some(other) => {
-                    tracing::debug!("Display[{}] Pre-session event: {:?}", display_index, other);
-                }
-                None => {
-                    // Channel closed permanently — no more connections possible
-                    info!(
-                        "Display[{}] Signaling channel closed (total sessions: {}). Exiting.",
-                        display_index, session_count
-                    );
-                    break 'reconnect;
-                }
-            }
+            };
+            cfg
         };
 
         // ── Initialise display decoder (new instance per session) ─────────
@@ -275,9 +297,21 @@ async fn run_display(
                             warn!("Display[{}] Sender disconnected unexpectedly", display_index);
                             break "client_disconnected";
                         }
-                        SignalingEvent::ConfigUpdated { config } => {
-                            info!("Display[{}] Config update: {:?}", display_index, config);
-                            // TODO Phase 5E: hot-reload decoder on resolution change
+                        SignalingEvent::ConfigUpdated { config: new_cfg } => {
+                            info!("Display[{}] Config update received: {:?}", display_index, new_cfg);
+                            let cur_w = config.resolution.width;
+                            let cur_h = config.resolution.height;
+                            if new_cfg.resolution.width != cur_w || new_cfg.resolution.height != cur_h {
+                                info!(
+                                    "Display[{}] Resolution change {}×{} → {}×{}: hot-reloading decoder",
+                                    display_index,
+                                    cur_w, cur_h,
+                                    new_cfg.resolution.width, new_cfg.resolution.height
+                                );
+                                pending_config = Some(new_cfg);
+                                break "config_updated";
+                            }
+                            // Same resolution — no decoder restart needed
                         }
                         _ => {}
                     }
@@ -303,7 +337,8 @@ async fn run_display(
             break 'reconnect;
         }
 
-        // Otherwise loop back and wait for the next sender connection
+        // "config_updated": pending_config already set above — loop back to re-init decoder.
+        // All other reasons: loop back and wait for the next sender connection.
     }
 
     info!("Display[{}] Receiver loop exited.", display_index);

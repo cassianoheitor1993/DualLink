@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import DualLinkCore
+import Discovery
 import VirtualDisplay
 import ScreenCapture
 import Transport
@@ -14,6 +15,7 @@ enum TransportSelection: String, CaseIterable {
 
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
+    @StateObject private var discovery = DiscoveryService()
     @State private var receiverHost: String = "10.0.0.59"
     @State private var pairingPin: String = ""
     @State private var use60fps: Bool = true
@@ -38,7 +40,8 @@ struct ContentView: View {
                     selectedResolution: $selectedResolution,
                     selectedCodec: $selectedCodec,
                     transportMode: $transportMode,
-                    displayCount: $displayCount
+                    displayCount: $displayCount,
+                    discoveredPeers: discovery.discoveredPeers
                 )
                 Divider()
             }
@@ -61,6 +64,10 @@ struct ContentView: View {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                 NSApp.mainWindow?.makeKeyAndOrderFront(nil)
             }
+            discovery.startBrowsing()
+        }
+        .onDisappear {
+            discovery.stopBrowsing()
         }
     }
 }
@@ -76,6 +83,8 @@ private struct ConnectView: View {
     @Binding var selectedCodec: VideoCodec
     @Binding var transportMode: TransportSelection
     @Binding var displayCount: Int
+    let discoveredPeers: [PeerInfo]
+    @State private var selectedPeerID: String = ""
     @FocusState private var isFocused: Bool
 
     var body: some View {
@@ -93,8 +102,36 @@ private struct ConnectView: View {
                 .labelsHidden()
             }
 
-            // Wi-Fi IP field (hidden when USB-only)
+            // Wi-Fi IP field + mDNS discovered receivers (hidden when USB-only)
             if transportMode != .usb {
+                // Discovered receivers picker (only shown when at least one is found)
+                if !discoveredPeers.isEmpty {
+                    HStack(spacing: 8) {
+                        Image(systemName: "magnifyingglass.circle")
+                            .foregroundStyle(.green)
+                        Picker("Discovered", selection: $selectedPeerID) {
+                            Text("— enter IP manually —").tag("")
+                            ForEach(discoveredPeers, id: \.id) { peer in
+                                Text("\(peer.name)  ·  \(peer.address)")
+                                    .tag(peer.id)
+                            }
+                        }
+                        .labelsHidden()
+                        .onChange(of: selectedPeerID) { id in
+                            if let peer = discoveredPeers.first(where: { $0.id == id }) {
+                                receiverHost = peer.address
+                            }
+                        }
+                        // Auto-select if only one receiver is found
+                        .onAppear {
+                            if discoveredPeers.count == 1 && selectedPeerID.isEmpty {
+                                selectedPeerID = discoveredPeers[0].id
+                                receiverHost = discoveredPeers[0].address
+                            }
+                        }
+                    }
+                }
+
                 Text("Linux Receiver IP")
                     .font(.caption)
                     .foregroundStyle(.secondary)

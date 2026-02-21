@@ -5,15 +5,14 @@
 //! - `encoder::GstEncoder` with `mfh264enc` / `nvh264enc` / `x264enc` priority
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::collections::VecDeque;
 
-use anyhow::Result;
 use duallink_capture_windows::{CaptureConfig, ScreenCapturer};
 use duallink_transport_client::{SignalingClient, VideoSender};
 use duallink_core::StreamConfig;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, Notify};
 use tracing::{info, warn};
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -66,27 +65,28 @@ pub struct PipelineStatus {
 
 /// Handle to a running capture → encode → send pipeline task.
 pub struct WinSenderPipeline {
-    stop_tx:      oneshot::Sender<()>,
+    stop_notify:  Arc<Notify>,
     frames_sent:  Arc<AtomicU64>,
 }
 
 impl WinSenderPipeline {
     /// Spawn the async pipeline task and return a handle to it.
     pub fn spawn(config: PipelineConfig, status_tx: mpsc::Sender<PipelineStatus>) -> Self {
-        let (stop_tx, stop_rx) = oneshot::channel::<()>();
+        let stop_notify = Arc::new(Notify::new());
         let frames_sent = Arc::new(AtomicU64::new(0));
         let fs = Arc::clone(&frames_sent);
+        let sn = Arc::clone(&stop_notify);
 
         tokio::spawn(async move {
-            run_pipeline(config, status_tx, stop_rx, fs).await;
+            run_pipeline(config, status_tx, sn, fs).await;
         });
 
-        Self { stop_tx, frames_sent }
+        Self { stop_notify, frames_sent }
     }
 
-    /// Request the pipeline to stop (best-effort, non-blocking).
+    /// Signal the pipeline to stop gracefully.
     pub fn stop(&self) {
-        // Can't call on consumed sender, so hold a flag instead of consuming
+        self.stop_notify.notify_one();
     }
 
     pub fn frames_sent(&self) -> u64 {
@@ -99,7 +99,7 @@ impl WinSenderPipeline {
 async fn run_pipeline(
     cfg: PipelineConfig,
     status_tx: mpsc::Sender<PipelineStatus>,
-    mut stop_rx: oneshot::Receiver<()>,
+    stop_notify: Arc<Notify>,
     frames_sent: Arc<AtomicU64>,
 ) {
     let idx = cfg.display_index;
@@ -198,7 +198,7 @@ async fn run_pipeline(
 
     loop {
         tokio::select! {
-            _ = &mut stop_rx => {
+            _ = stop_notify.notified() => {
                 info!("Display[{idx}] stop requested");
                 break;
             }
@@ -232,8 +232,9 @@ async fn run_pipeline(
             maybe_ev = input_rx.recv() => {
                 match maybe_ev {
                     Some(ev) => {
-                        // TODO Phase 5F: inject via SendInput on Windows
-                        tracing::debug!("Display[{idx}] input: {:?}", ev);
+                        // Inject the input event into the local Windows session.
+                        super::input_inject::inject_input_event(&ev);
+                        tracing::debug!("Display[{idx}] input injected: {:?}", ev);
                     }
                     None => break,
                 }

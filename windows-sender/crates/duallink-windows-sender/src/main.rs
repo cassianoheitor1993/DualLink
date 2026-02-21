@@ -16,10 +16,11 @@
 //! - [x] GStreamer H.264 encode (mfh264enc / nvh264enc / x264enc priority)
 //! - [x] egui settings UI with mDNS receiver discovery
 //! - [x] `WinSenderPipeline` — per-display capture → encode → UDP-send task
-//! - [ ] SendInput input injection (Phase 5F)
-//! - [ ] Virtual display via IddCx / parsec-vdd (Phase 5F)
+//! - [x] SendInput input injection (Phase 5F)
+//! - [ ] Virtual display via IddCx / parsec-vdd (Phase 5G)
 
 mod encoder;
+mod input_inject;
 mod pipeline;
 mod ui;
 

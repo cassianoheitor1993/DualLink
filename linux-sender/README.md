@@ -4,9 +4,9 @@ Turns a Linux machine into a DualLink **sender** — share its screen wirelessly
 or via USB-C with any DualLink receiver (Linux, Windows, or macOS running the
 DualLink receiver app).
 
-> **Phase 5C** — PipeWire capture, GStreamer H.264 encoder, TLS signaling
-> client, and UDP DLNK video sender are now implemented.  The egui UI and
-> multi-display sender are planned for Phase 5D.
+> **Phase 5F complete.**  PipeWire capture, GStreamer H.264 encoder, TLS signaling
+> client, UDP sender, egui settings UI, mDNS receiver discovery, and uinput
+> input injection are all implemented.
 
 ---
 
@@ -20,7 +20,17 @@ PipeWire portal (ashpd)
                                                               │
                           SignalingClient (TLS:7879+2n) ◄─── │
                           VideoSender    (UDP:7878+2n) ──────►  Receiver
+                          ← InputEvent   (TLS back-channel)  ◄─ uinput injection
 ```
+
+---
+
+## Modes
+
+| Mode | Command | Notes |
+|------|---------|-------|
+| **GUI** (default) | `./duallink-sender` | egui settings window with mDNS discovery |
+| **Headless** | `DUALLINK_NO_UI=1 ./duallink-sender` | Env-var configured, no window |
 
 ---
 
@@ -74,7 +84,22 @@ cargo build --release -p duallink-linux-sender
 
 ## Run
 
+### GUI mode (default)
+
 ```bash
+./target/release/duallink-sender
+```
+
+The settings window lets you:
+- Browse auto-discovered receivers via mDNS (no IP entry needed)
+- Enter receiver IP + pairing PIN manually as fallback
+- Choose display index, resolution, FPS, bitrate
+- Start / stop the capture pipeline
+
+### Headless mode
+
+```bash
+DUALLINK_NO_UI=1 \
 DUALLINK_HOST=192.168.1.100 \
 DUALLINK_PIN=123456 \
 DUALLINK_DISPLAY=0 \
@@ -94,6 +119,23 @@ DUALLINK_KBPS=8000 \
 
 ---
 
+## mDNS Discovery
+
+The sender browses for `_duallink._tcp.local.` services on start. Any running
+DualLink receiver on the same subnet will appear automatically in the UI. The
+TXT record carries the receiver's LAN IP, port, display count, and a short TLS
+fingerprint for TOFU verification.
+
+---
+
+## Input Injection
+
+Keyboard and mouse events captured inside the receiver's video window are
+forwarded back to the Linux sender over the TLS signaling back-channel and
+replayed via an `evdev` uinput virtual device.
+
+---
+
 ## Encoder priority
 
 | Priority | Element | Requires |
@@ -104,12 +146,18 @@ DUALLINK_KBPS=8000 \
 
 ---
 
-## Phase 5C Status
+## Implementation Status
 
-- [x] `duallink-capture-linux` — PipeWire portal (`ashpd`) + GStreamer `pipewiresrc` → `appsink`
-- [x] `duallink-transport-client` — TLS signaling client (`SignalingClient`) + UDP sender (`VideoSender`)
-- [x] `encoder.rs` — GStreamer H.264 encoder (`vaapih264enc` / `nvh264enc` / `x264enc` fallback)
-- [x] Full capture → encode → send loop in `main.rs` (env-var config)
-- [ ] egui settings UI (Phase 5D)
-- [ ] Multi-display sender — N parallel pipelines (Phase 5D)
-- [ ] X11 XShm fallback capture backend (Phase 6)
+| Feature | Phase | Status |
+|---------|-------|--------|
+| `duallink-capture-linux` — PipeWire (`ashpd`) + GStreamer `pipewiresrc` | 5C | ✅ |
+| `duallink-transport-client` — TLS `SignalingClient` + UDP `VideoSender` | 5C | ✅ |
+| `encoder.rs` — GStreamer H.264 (`vaapih264enc` / `nvh264enc` / `x264enc`) | 5C | ✅ |
+| `SenderPipeline` — per-display capture → encode → send task | 5D | ✅ |
+| `Arc<Notify>` clean pipeline stop | 5D | ✅ |
+| `input_inject.rs` — uinput virtual mouse + keyboard | 5D | ✅ |
+| egui settings UI | 5D | ✅ |
+| mDNS receiver discovery panel in UI | 5E | ✅ |
+| Multi-display sender (N parallel `SenderPipeline` tasks) | 5D | ✅ |
+| X11 XShm fallback capture backend | 6 | 🔲 |
+| Absolute mouse positioning (ABS_X/Y tablet device) | 6 | 🔲 |

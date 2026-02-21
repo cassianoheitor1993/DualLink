@@ -12,6 +12,7 @@
 4. [Fase 2 — Extensão Real de Tela](#fase-2--extensão-real-de-tela)
 5. [Fase 3 — Modo USB-C](#fase-3--modo-usb-c)
 6. [Fase 4 — Polish & Packaging](#fase-4--polish--packaging)
+7. [Fase 5 — Platform Expansion](#fase-5--platform-expansion)
 7. [Backlog Detalhado](#backlog-detalhado)
 8. [Riscos & Mitigações](#riscos--mitigações)
 9. [Critérios de Sucesso](#critérios-de-sucesso)
@@ -27,7 +28,8 @@ Fase 1 ─── MVP Wi-Fi (Espelhamento) ────────── ~4 sema
 Fase 2 ─── Extensão de Tela + 60fps ────────── ~4 semanas
 Fase 3 ─── Modo USB-C ──────────────────────── ~3 semanas
 Fase 4 ─── Polish, Packaging & Security ────── ~2 semanas
-                                         Total: ~16 semanas
+Fase 5 ─── Platform Expansion ──────────────── ~8 semanas ✅ CONCLUÍDA
+                                         Total: ~24 semanas
 ```
 
 ---
@@ -219,6 +221,28 @@ USB-C→RJ45) com subnet estático 10.0.1.x.
 
 ---
 
+---
+
+## Fase 5 — Platform Expansion
+
+**Status:** ✅ CONCLUÍDA (commit `3c8ec15`)
+**Duração real:** ~8 semanas
+**Objetivo:** Expandir DualLink para múltiplos senders (Linux, Windows), multi-display, mDNS auto-discovery, input injection e UI egui.
+
+### Sub-fases Concluídas
+
+| Sub-fase | Conteúdo | Commit |
+|---------|---------|--------|
+| 5A | Multi-display transport receiver (`start_all`, `DisplayChannels`) | `31578ed` |
+| 5B | Windows sender (WGC + Media Foundation + SendInput + egui) | `c72173d` |
+| 5C | Linux sender (PipeWire + GStreamer + TLS/UDP transport client) | `26ba09f` |
+| 5D | `SenderPipeline` (`Arc<Notify>` stop), uinput inject, egui UI, multi-display N×pipeline | `b406807` |
+| 5E | mDNS discovery — `DualLinkAdvertiser`, `detect_local_ip()`, browser + picker UI nos senders | `f85a6b6` |
+| 5F | Decoder hot-reload (`pending_config`), `duallink-gui` multi-display panel, LAN IP no UI | `61844ed` |
+| 5G | CI: jobs para linux-sender + windows-sender; lint fixes; docs | `3c8ec15` |
+
+---
+
 ## Backlog Detalhado
 
 ### Prioridade Alta (Must Have)
@@ -294,34 +318,59 @@ USB-C→RJ45) com subnet estático 10.0.1.x.
 
 ## Stack & Ferramentas
 
-### macOS Client
+### macOS Sender (`mac-client/`)
 | Componente | Tecnologia |
 |-----------|-----------|
-| Linguagem | Swift |
+| Linguagem | Swift 5.9+ |
 | Captura de tela | ScreenCaptureKit |
 | Encoding | VideoToolbox (H.264/H.265) |
 | Virtual Display | CGVirtualDisplay (macOS 14+) |
-| Networking | Network.framework |
-| WebRTC | Google WebRTC (via SPM) |
+| Networking | Network.framework + NWBrowser (mDNS) |
+| Transporte | DLNK (TLS TCP + UDP) |
+| Input | CGEvent injection |
 | Build | Xcode + SPM |
 
-### Linux Receiver
+### Linux Receiver (`linux-receiver/`)
 | Componente | Tecnologia |
 |-----------|-----------|
-| Linguagem | Rust |
-| Decoding | GStreamer + VAAPI/NVDEC |
-| Rendering | wgpu ou GStreamer video sink |
-| WebRTC | webrtc-rs ou GStreamer webrtcbin |
-| UI | Tauri v2 |
-| Build | Cargo |
+| Linguagem | Rust 2021 |
+| Decoding | GStreamer (vaapih264dec → nvh264dec → avdec_h264) |
+| Rendering | GStreamer video sink / glutin |
+| UI | egui / eframe |
+| mDNS | mdns-sd (`DualLinkAdvertiser`) |
+| Transporte | DLNK (rustls + tokio UDP) |
+| Build | Cargo workspace |
 
-### Shared Protocol
+### Linux Sender (`linux-sender/`)
 | Componente | Tecnologia |
 |-----------|-----------|
-| Serialização | Protocol Buffers |
-| Discovery | mDNS (Bonjour/Avahi) |
-| Signaling | WebSocket + JSON |
-| Streaming | WebRTC (DTLS-SRTP) |
+| Linguagem | Rust 2021 |
+| Captura | PipeWire (`ashpd`) + GStreamer `pipewiresrc` |
+| Encoding | vaapih264enc → nvh264enc → x264enc |
+| UI | egui / eframe |
+| mDNS | mdns-sd (browser) |
+| Input Inject | uinput evdev |
+| Build | Cargo workspace |
+
+### Windows Sender (`windows-sender/`)
+| Componente | Tecnologia |
+|-----------|-----------|
+| Linguagem | Rust 2021 |
+| Captura | WGC (Windows.Graphics.Capture) |
+| Encoding | Media Foundation H.264 |
+| UI | egui / eframe |
+| mDNS | mdns-sd (browser) |
+| Input Inject | SendInput (Win32 API) |
+| Build | Cargo workspace |
+
+### Protocolo Compartilhado (DLNK)
+| Componente | Tecnologia |
+|-----------|-----------|
+| Signaling | TLS 1.3 TCP, JSON length-prefixed, porta `7879+2n` |
+| Vídeo | UDP, header binário 18 bytes ("DLNK"), porta `7878+2n` |
+| Discovery | mDNS `_duallink._tcp.local.` + TXT record |
+| Crypto | rcgen (TLS self-signed) + SHA-256 fingerprint TOFU |
+| Serialização | JSON (controle) + raw H.264 NAL (vídeo) |
 
 ### DevOps
 | Componente | Tecnologia |
@@ -353,10 +402,9 @@ Semana  1  2  3  4  5  6  7  8  9  10  11  12  13  14  15  16
 
 ## Próximo Passo Imediato
 
-> **Começar pela Tarefa 0.1.1:** Pesquisar e prototipar `CGVirtualDisplay` no macOS.
-> Este é o maior risco técnico e precisa ser validado antes de tudo.
+> **Fase 5 concluída.** Próximo passo: planejar Fase 6 — USB-C real (gadget mode ou Thunderbolt), H.265 encoding, áudio, e polish de UX.
 
 ---
 
 *Documento criado em: 2026-02-20*
-*Última atualização: 2026-02-20*
+*Última atualização: 2026-05-30 (Phase 5G)*

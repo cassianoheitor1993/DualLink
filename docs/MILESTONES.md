@@ -137,6 +137,58 @@
 
 ---
 
+
+---
+
+## Milestone 5: Platform Expansion ✅ CONCLUÍDO
+**Commits:** 5A `31578ed` → 5G `3c8ec15`
+**Critério de saída:** 4 senders funcionando (macOS, Linux, Windows, + receiver Linux) com mDNS auto-discovery e input injection
+
+### Epic 5.1 — Multi-Display Transport (5A)
+- **Story 5.1.1:** ✅ `start_all()` no receiver inicia N pipelines paralelos (um por display)
+- **Story 5.1.2:** ✅ `DisplayChannels` — bounded channel por display index para frames
+- **Story 5.1.3:** ✅ `byte[17]` no DLNK frame header carrega display_index para demux
+
+### Epic 5.2 — Linux Sender (5C)
+- **Story 5.2.1:** ✅ `duallink-capture-linux` — PipeWire portal via `ashpd` + GStreamer `pipewiresrc`
+- **Story 5.2.2:** ✅ `encoder.rs` — vaapih264enc / nvh264enc / x264enc fallback chain
+- **Story 5.2.3:** ✅ `duallink-transport-client` — `SignalingClient` (TLS TCP) + `VideoSender` (UDP)
+- **Story 5.2.4:** ✅ `SenderPipeline` — `Arc<Notify>` stop, per-display task (5D)
+- **Story 5.2.5:** ✅ `duallink-input-inject` — uinput virtual mouse + keyboard (5D)
+- **Story 5.2.6:** ✅ egui settings UI com mDNS receiver picker (5D/5E)
+
+### Epic 5.3 — Windows Sender (5B)
+- **Story 5.3.1:** ✅ WGC capture via `windows` crate (`GraphicsCaptureItem`)
+- **Story 5.3.2:** ✅ Media Foundation H.264 encoder (`IMFTransform`)
+- **Story 5.3.3:** ✅ `SendInput` win32 mouse/keyboard injection
+- **Story 5.3.4:** ✅ egui settings UI com mDNS receiver picker
+
+### Epic 5.4 — mDNS Auto-Discovery (5E)
+- **Story 5.4.1:** ✅ `DualLinkAdvertiser::register()` em `duallink-discovery` (receiver)
+- **Story 5.4.2:** ✅ `detect_local_ip()` — UDP probe trick, sem envio de pacotes
+- **Story 5.4.3:** ✅ TXT record: `version`, `displays`, `port`, `host`, `fp`
+- **Story 5.4.4:** ✅ mDNS browser + receiver picker no egui dos senders
+- **Story 5.4.5:** ✅ mDNS browse via `NWBrowser` no mac-client Swift
+
+### Epic 5.5 — Input Injection Full (5D/5F)
+- **Story 5.5.1:** ✅ Linux uinput: `REL_X/Y` mouse, button events, `EV_KEY` keyboard
+- **Story 5.5.2:** ✅ macOS CGEvent injection (receiver side em mac-client)
+- **Story 5.5.3:** ✅ Windows `SendInput` injection em windows-sender
+- **Story 5.5.4:** ✅ `InputEvent` JSON mensagem no back-channel TLS TCP
+
+### Epic 5.6 — Decoder Hot-Reload (5F)
+- **Story 5.6.1:** ✅ `pending_config: Option<StreamConfig>` no `AppState`
+- **Story 5.6.2:** ✅ `"config_updated"` signal quebra loop de decode sem reiniciar processo
+- **Story 5.6.3:** ✅ Reinicialização do decoder na próxima iteração `'reconnect`
+
+### Epic 5.7 — duallink-gui & UX (5F/5G)
+- **Story 5.7.1:** ✅ `duallink-gui` crate com egui multi-display panel
+- **Story 5.7.2:** ✅ LAN IP e TLS fingerprint exibidos no UI do receiver
+- **Story 5.7.3:** ✅ CI jobs para linux-sender e windows-sender (5G)
+- **Story 5.7.4:** ✅ Lint fixes e documentação atualizada (5G)
+
+---
+
 ## Métricas de Acompanhamento
 
 | Métrica | Target MVP | Target Final |
@@ -148,7 +200,9 @@
 | CPU usage | < 30% | < 25% |
 | Uptime | 1h | 8h+ |
 | Tempo de setup | < 5min | < 1min |
+| Plataformas sender | 1 (macOS) | 3 (macOS+Linux+Windows) |
 
 ---
 
 *Documento criado em: 2026-02-20*
+*Última atualização: 2026-05-30 (Milestone 5 / Phase 5G)*

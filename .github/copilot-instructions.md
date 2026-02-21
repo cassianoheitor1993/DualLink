@@ -10,7 +10,7 @@
 **DualLink** — App cross-platform que transforma um laptop Linux em monitor externo para macOS (espelhamento + extensão de tela) via USB-C ou Wi-Fi.
 
 - Documentação completa: `docs/WORK_PLAN.md`, `docs/MILESTONES.md`, `docs/TECHNICAL_RESEARCH.md`
-- Roadmap: Fase 0 (Research) → Fase 1 (MVP Wi-Fi) → Fase 2 (Extensão 60fps) → Fase 3 (USB-C) → Fase 4 (Polish)
+- Roadmap: Fase 0 (Research) → Fase 1 (MVP Wi-Fi) → Fase 2 (Extensão 60fps) → Fase 3 (USB-C) → Fase 4 (Polish) → **Fase 5 (Platform Expansion: Linux sender, Windows sender, mDNS, multi-display, input injection)**
 
 ---
 
@@ -43,7 +43,7 @@ As instruções estão organizadas em módulos em `.github/instructions/`. **Car
     ├── _index.instructions.md         # Como usar golden tips
     ├── macos.instructions.md          # Tips macOS
     ├── linux.instructions.md          # Tips Linux
-    ├── webrtc.instructions.md         # Tips WebRTC/streaming
+    ├── streaming.instructions.md      # Tips streaming/DLNK
     └── general.instructions.md        # Tips gerais
 ```
 
@@ -102,7 +102,7 @@ Antes de iniciar um debug:
 ### Linguagens
 - **macOS:** Swift 5.9+, SwiftUI, async/await
 - **Linux:** Rust 2021 edition, tokio, modular crates
-- **Protocolo:** Protocol Buffers
+- **Protocolo:** DLNK (custom UDP + TLS TCP) — sem WebRTC, sem Protobuf
 
 ### Commits
 - Conventional commits: `feat:`, `fix:`, `chore:`, `docs:`, `perf:`, `test:`
@@ -128,8 +128,9 @@ Antes de iniciar um debug:
 | Diretório | Conteúdo | Linguagem |
 |-----------|----------|-----------|
 | `mac-client/` | App sender macOS | Swift |
+| `linux-sender/` | App sender Linux (PipeWire) | Rust |
+| `windows-sender/` | App sender Windows (WGC) | Rust |
 | `linux-receiver/` | App receiver Linux | Rust |
-| `shared-protocol/` | Definições de protocolo | Protobuf |
 | `docs/` | Documentação técnica | Markdown |
 | `infra/` | CI/CD, Docker, scripts | YAML/Shell |
 | `.github/instructions/` | Instruções modulares Copilot | Markdown |

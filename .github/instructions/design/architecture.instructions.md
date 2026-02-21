@@ -28,7 +28,7 @@ Abstrair nos pontos de variabilidade, ser concreto nos internos:
 
 ```
 Abstrato (interface):          Concreto (implementação):
-├── TransportLayer             ├── WebRTCTransport
+├── TransportLayer             ├── DLNKTransport   (TLS TCP + UDP)
 │                              ├── USBTransport
 ├── VideoDecoder               ├── NVDECDecoder
 │                              ├── VAAPIDecoder
@@ -86,7 +86,7 @@ Instrumentar o pipeline para sempre saber:
 
 ```
 ┌─────────────────────────────────────────────┐
-│ App (Lifecycle, UI — Tauri)                 │
+│ App (Lifecycle, UI — egui)                  │
 ├─────────────┬───────────────────────────────┤
 │  Discovery  │         Signaling             │
 ├─────────────┴───────────────────────────────┤
@@ -99,7 +99,7 @@ Instrumentar o pipeline para sempre saber:
 ### Comunicação entre Módulos
 
 - **Dentro de um app:** Mensagens via channels/async (sem shared mutable state)
-- **Entre apps:** Protocol Buffers via WebRTC DataChannel (controle) + Media Track (vídeo)
+- **Entre apps:** DLNK protocol — TLS TCP 7879+2n (controle/signaling) + UDP 7878+2n (vídeo H.264)
 
 ## Regras de Dependência
 

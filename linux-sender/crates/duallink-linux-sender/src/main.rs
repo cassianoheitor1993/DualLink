@@ -1,47 +1,34 @@
-//! DualLink Linux Sender — Phase 5C.
+//! DualLink Linux Sender — Phase 5D.
 //!
 //! Turns a Linux machine into a DualLink **sender**, mirroring or extending its
 //! screen to a DualLink **receiver** (another Linux machine, Windows, or macOS).
 //!
-//! # Architecture
+//! # Modes
 //!
-//! ```text
-//! Linux (this app)                     Receiver (Linux / Windows / macOS)
-//! ───────────────────────────────────  ──────────────────────────────────────
-//! PipeWire / XShm capture               display decoder (GStreamer / VT)
-//!   │
-//!   ▼
-//! GStreamer encode
-//!   vaapih264enc / nvh264enc / x264enc
-//!   │
-//!   ▼
-//! VideoSender (UDP:7878+2n) ─────────► UdpReceiver → FrameReassembler
-//! SignalingClient (TLS:7879+2n) ─────► TLS SignalingServer
-//! ```
+//! | Mode | How to start | Key env vars |
+//! |------|-------------|-------------|
+//! | **GUI** (default) | `./duallink-sender` | — |
+//! | **Headless** | `DUALLINK_NO_UI=1 ./duallink-sender` | `DUALLINK_HOST`, `DUALLINK_PIN`, etc. |
 //!
-//! # Phase 5C status
+//! # Phase 5D status
 //!
-//! - [x] `duallink-capture-linux` — PipeWire portal + GStreamer appsink capture
-//! - [x] `duallink-transport-client` — TLS signaling client + UDP DLNK sender
-//! - [x] `duallink-linux-sender/src/encoder.rs` — GStreamer H.264 encode pipeline
-//! - [ ] Full capture → encode → send loop (in-progress, wired below)
-//! - [ ] egui settings UI (receiver IP, PIN, display count, resolution, fps)
+//! - [x] egui settings UI (host, PIN, resolution, fps, bitrate, display count)
+//! - [x] `SenderPipeline` — per-display capture → encode → UDP-send task
+//! - [x] `input_inject` — uinput virtual mouse + keyboard (Linux receiver → local desktop)
+//! - [x] Multi-display sender (N parallel `SenderPipeline` tasks)
+//! - [ ] Absolute mouse positioning (ABS_X/Y tablet device)
+//! - [ ] egui FPS graph overlay
 
 mod encoder;
+mod input_inject;
+mod pipeline;
+mod ui;
 
-use std::env;
-use std::time::{SystemTime, UNIX_EPOCH};
-
-use anyhow::{Context, Result};
-use duallink_capture_linux::{CaptureConfig, ScreenCapturer};
-use duallink_core::StreamConfig;
-use duallink_transport_client::{SignalingClient, VideoSender};
-use encoder::GstEncoder;
+use anyhow::Result;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()
@@ -52,143 +39,112 @@ async fn main() -> Result<()> {
 
     info!("DualLink Linux Sender v{}", env!("CARGO_PKG_VERSION"));
 
-    // ── Configuration from environment variables (egui UI in a later phase) ──
-    let host          = env::var("DUALLINK_HOST").unwrap_or_else(|_| "192.168.1.100".to_owned());
-    let pin           = env::var("DUALLINK_PIN").unwrap_or_else(|_| "000000".to_owned());
-    let display_index = env::var("DUALLINK_DISPLAY")
-        .ok()
-        .and_then(|v| v.parse::<u8>().ok())
-        .unwrap_or(0);
-    let width  = env::var("DUALLINK_WIDTH").ok().and_then(|v| v.parse().ok()).unwrap_or(1920u32);
-    let height = env::var("DUALLINK_HEIGHT").ok().and_then(|v| v.parse().ok()).unwrap_or(1080u32);
-    let fps    = env::var("DUALLINK_FPS").ok().and_then(|v| v.parse().ok()).unwrap_or(60u32);
-    let kbps   = env::var("DUALLINK_KBPS").ok().and_then(|v| v.parse().ok()).unwrap_or(8000u32);
+    // Initialise uinput injector (no-op if /dev/uinput is not accessible)
+    input_inject::init();
+
+    // Initialise GStreamer once before any pipeline is created
+    gstreamer::init()?;
+
+    // Build a multi-threaded tokio runtime that runs concurrently with eframe.
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+
+    let no_ui = std::env::var("DUALLINK_NO_UI").as_deref() == Ok("1");
+
+    if no_ui {
+        // ── Headless mode: read config from env vars, run without a window ──
+        rt.block_on(headless_main())
+    } else {
+        // ── GUI mode: launch eframe window, pipelines run in the tokio rt ──
+        let handle = rt.handle().clone();
+        // Keep the runtime alive for the duration of the GUI.
+        let _rt_guard = rt.enter();
+
+        let native_options = eframe::NativeOptions {
+            viewport: egui::ViewportBuilder::default()
+                .with_title("DualLink Linux Sender")
+                .with_inner_size([480.0, 320.0])
+                .with_min_inner_size([380.0, 280.0]),
+            ..Default::default()
+        };
+
+        eframe::run_native(
+            "DualLink Linux Sender",
+            native_options,
+            Box::new(move |cc| Ok(Box::new(ui::SenderApp::new(handle, cc)))),
+        )
+        .map_err(|e| anyhow::anyhow!("eframe error: {}", e))
+    }
+}
+
+// ── Headless pipeline loop (env-var config) ────────────────────────────────────
+
+async fn headless_main() -> Result<()> {
+    use std::{env, time::{Duration, SystemTime, UNIX_EPOCH}};
+    use pipeline::{PipelineConfig, PipelineState, SenderPipeline};
+    use tokio::sync::mpsc;
+
+    let host = env::var("DUALLINK_HOST").unwrap_or_else(|_| "192.168.1.100".to_owned());
+    let pin  = env::var("DUALLINK_PIN").unwrap_or_else(|_| "000000".to_owned());
+    let display_count: u8 = env::var("DUALLINK_DISPLAY_COUNT")
+        .ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+    let width:  u32 = env::var("DUALLINK_WIDTH").ok().and_then(|v| v.parse().ok()).unwrap_or(1920);
+    let height: u32 = env::var("DUALLINK_HEIGHT").ok().and_then(|v| v.parse().ok()).unwrap_or(1080);
+    let fps:    u32 = env::var("DUALLINK_FPS").ok().and_then(|v| v.parse().ok()).unwrap_or(60);
+    let kbps:   u32 = env::var("DUALLINK_KBPS").ok().and_then(|v| v.parse().ok()).unwrap_or(8000);
 
     info!(
-        "Connecting to {} display_index={} {}x{} @{}fps bitrate={}kbps",
-        host, display_index, width, height, fps, kbps
+        "Headless mode: {} display(s) → {} — {}×{} @{}fps {}kbps",
+        display_count, host, width, height, fps, kbps
     );
 
-    // ── 1. Connect signaling ──────────────────────────────────────────────────
-    let mut sig = SignalingClient::connect(&host, display_index)
-        .await
-        .with_context(|| format!("Signaling connect to {}", host))?;
+    let (status_tx, mut status_rx) = mpsc::channel::<pipeline::PipelineStatus>(64);
+    let mut pipelines = Vec::new();
 
-    let session_id = format!("linux-sender-{}", ts_ms());
-    let config = StreamConfig {
-        width,
-        height,
-        fps,
-        ..Default::default()
-    };
-
-    let ack = sig
-        .send_hello(&session_id, hostname(), config.clone(), &pin)
-        .await
-        .context("send_hello")?;
-
-    if !ack.accepted {
-        anyhow::bail!("Session rejected by receiver: {:?}", ack.reason);
+    for i in 0..display_count {
+        let cfg = PipelineConfig {
+            host: host.clone(),
+            pairing_pin: pin.clone(),
+            display_index: i,
+            width,
+            height,
+            fps,
+            bitrate_kbps: kbps,
+        };
+        pipelines.push(SenderPipeline::spawn(cfg, status_tx.clone()));
     }
-    info!("Session accepted (id={})", session_id);
 
-    let (mut sig_writer, mut input_rx) = sig.start_recv_loop();
-
-    // ── 2. Connect UDP video sender ───────────────────────────────────────────
-    let video = VideoSender::connect(&host, display_index)
-        .await
-        .with_context(|| format!("UDP connect to {}", host))?;
-
-    // ── 3. Open screen capture ────────────────────────────────────────────────
-    let capture_cfg = CaptureConfig { display_index, width, height, fps };
-    let mut capturer = ScreenCapturer::open(capture_cfg)
-        .await
-        .context("PipeWire capture open")?;
-
-    // ── 4. Create GStreamer H.264 encoder ─────────────────────────────────────
-    gstreamer::init().context("GStreamer init")?;
-    let mut encoder = GstEncoder::new(width, height, fps, kbps)
-        .context("Creating GStreamer encoder")?;
-
-    info!("Capture + encode pipeline started.  Streaming to {} ...", host);
-
-    // ── 5. Keepalive timer ────────────────────────────────────────────────────
-    let mut keepalive_ticker = tokio::time::interval(tokio::time::Duration::from_secs(1));
-
-    // ── 6. Main loop: capture → encode → send ────────────────────────────────
-    loop {
-        tokio::select! {
-            // Capture a raw frame
-            maybe_raw = capturer.next_frame() => {
-                let Some(raw) = maybe_raw else {
-                    info!("Capture ended (EOS)");
-                    break;
-                };
-                // Push into GStreamer encoder (synchronous, fast)
-                if let Err(e) = encoder.push_frame(raw) {
-                    tracing::warn!("push_frame error: {:#}", e);
-                }
+    // Wait until all pipelines finish
+    let mut stopped = 0usize;
+    while let Some(s) = status_rx.recv().await {
+        match &s.state {
+            PipelineState::Streaming => {
+                info!(
+                    "Display[{}] streaming — {:.1} fps {} frames",
+                    s.display_index, s.fps, s.frames_sent
+                );
             }
-
-            // Pull an encoded frame and send it
-            maybe_enc = encoder.next_encoded() => {
-                let Some(enc) = maybe_enc else {
-                    info!("Encoder pipeline ended");
-                    break;
-                };
-                if let Err(e) = video.send_frame(&enc).await {
-                    tracing::warn!("send_frame error: {:#}", e);
-                }
-            }
-
-            // Keepalive heartbeat (1 Hz)
-            _ = keepalive_ticker.tick() => {
-                if let Err(e) = sig_writer.send_keepalive(ts_ms()).await {
-                    tracing::warn!("keepalive error: {:#}", e);
+            PipelineState::Stopped => {
+                info!("Display[{}] stopped", s.display_index);
+                stopped += 1;
+                if stopped >= display_count as usize {
                     break;
                 }
             }
-
-            // Input events from receiver (injected into local X11 / Wayland)
-            maybe_event = input_rx.recv() => {
-                match maybe_event {
-                    Some(event) => {
-                        tracing::debug!("Input event: {:?}", event);
-                        // TODO Phase 5D: inject into Wayland/X11 via uinput or libinput
-                    }
-                    None => {
-                        info!("Signaling recv loop closed");
-                        break;
-                    }
+            PipelineState::Failed(e) => {
+                tracing::error!("Display[{}] failed: {}", s.display_index, e);
+                stopped += 1;
+                if stopped >= display_count as usize {
+                    break;
                 }
             }
+            _ => {}
         }
     }
 
-    // ── 7. Graceful shutdown ──────────────────────────────────────────────────
-    encoder.send_eos();
-    let _ = sig_writer.send_stop(&session_id).await;
-    info!("DualLink Linux Sender stopped.");
+    info!("All pipelines exited. Goodbye.");
     Ok(())
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-fn ts_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
-}
-
-fn hostname() -> &'static str {
-    // Leak is fine — called once at startup
-    Box::leak(
-        hostname::get()
-            .ok()
-            .and_then(|h| h.into_string().ok())
-            .unwrap_or_else(|| "linux-sender".to_owned())
-            .into_boxed_str(),
-    )
-}
 

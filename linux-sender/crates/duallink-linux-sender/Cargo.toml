@@ -26,3 +26,4 @@ bytes         = { workspace = true }
 gstreamer     = { workspace = true }
 gstreamer-app = { workspace = true }
 hostname      = { workspace = true }
+evdev         = { workspace = true }

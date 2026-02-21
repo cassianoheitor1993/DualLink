@@ -61,19 +61,24 @@ public struct StreamConfig: Equatable, Codable, Sendable {
     public var maxBitrateBps: Int
     public var codec: VideoCodec
     public var lowLatencyMode: Bool
+    /// Zero-based index identifying which display channel this config belongs to.
+    /// Display 0 = first (primary) stream; display 1 = second, etc.
+    public var displayIndex: UInt8
 
     public init(
         resolution: Resolution = .fhd,
         targetFPS: Int = 30,
         maxBitrateBps: Int = 8_000_000,
         codec: VideoCodec = .h264,
-        lowLatencyMode: Bool = true
+        lowLatencyMode: Bool = true,
+        displayIndex: UInt8 = 0
     ) {
         self.resolution = resolution
         self.targetFPS = targetFPS
         self.maxBitrateBps = maxBitrateBps
         self.codec = codec
         self.lowLatencyMode = lowLatencyMode
+        self.displayIndex = displayIndex
     }
 
     public static let `default` = StreamConfig()
@@ -83,7 +88,8 @@ public struct StreamConfig: Equatable, Codable, Sendable {
         targetFPS: 60,
         maxBitrateBps: 15_000_000,
         codec: .h264,
-        lowLatencyMode: true
+        lowLatencyMode: true,
+        displayIndex: 0
     )
 
     /// Auto-select a good bitrate for a given resolution + fps combo.
@@ -104,7 +110,8 @@ public struct StreamConfig: Equatable, Codable, Sendable {
             targetFPS: fps,
             maxBitrateBps: bitrate,
             codec: codec,
-            lowLatencyMode: true
+            lowLatencyMode: true,
+            displayIndex: 0
         )
     }
 }

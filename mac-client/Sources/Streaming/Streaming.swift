@@ -16,7 +16,8 @@ import DualLinkCore
 //  │  fragCount   UInt16  total fragments this frame │
 //  │  ptsMs       UInt32  presentation time (ms)     │
 //  │  flags       UInt8   bit0=keyframe              │
-//  │  reserved    UInt8[3]                           │
+//  │  display_idx UInt8   display index (0-based)    │  ← byte [17], was reserved[0]
+//  │  reserved    UInt8[2] (was reserved[1..2])       │
 //  ├────────────────────────────────────────────────┤
 //  │  payload     [UInt8] NAL data slice             │
 //  └────────────────────────────────────────────────┘
@@ -27,8 +28,18 @@ import DualLinkCore
 let kMagic: UInt32       = 0x444C_4E4B
 let kHeaderSize: Int     = 16
 let kMaxPayloadBytes: Int = 1_384   // MTU 1400 − 16 header
-let kDefaultPort: UInt16 = 7878     // DualLink video UDP port
-let kDefaultSignalingPort: UInt16 = 7879  // DualLink signaling TCP port
+let kDefaultPort: UInt16 = 7878     // DualLink video UDP port (display 0)
+let kDefaultSignalingPort: UInt16 = 7879  // DualLink signaling TCP port (display 0)
+
+/// UDP video port for a given display index: 7878, 7880, 7882, …
+public func videoPort(displayIndex: UInt8) -> UInt16 {
+    kDefaultPort + UInt16(displayIndex) * 2
+}
+
+/// TCP signaling port for a given display index: 7879, 7881, 7883, …
+public func signalingPort(displayIndex: UInt8) -> UInt16 {
+    kDefaultSignalingPort + UInt16(displayIndex) * 2
+}
 
 // MARK: - FramePacketizer
 
@@ -53,7 +64,8 @@ public struct FramePacketizer {
         nalData: [UInt8],
         frameSeq: UInt32,
         ptsMs: UInt32,
-        isKeyframe: Bool
+        isKeyframe: Bool,
+        displayIndex: UInt8 = 0
     ) -> [Packet] {
         guard !nalData.isEmpty else { return [] }
 
@@ -95,8 +107,9 @@ public struct FramePacketizer {
             let flags: UInt8 = isKeyframe ? 0x01 : 0x00
             datagram.append(flags)
 
-            // reserved (3 bytes)
-            datagram.append(contentsOf: [0x00, 0x00, 0x00])
+            // display_index (byte [17]) + reserved (bytes [18..19])
+            datagram.append(displayIndex)
+            datagram.append(contentsOf: [0x00, 0x00])
 
             // payload
             datagram.append(contentsOf: slice)

@@ -20,7 +20,8 @@
 //! [10..12] frag_count u16 BE   total fragments for this frame
 //! [12..16] pts_ms     u32 BE   presentation timestamp (ms)
 //! [16]     flags      u8       bit0 = keyframe
-//! [17..20] reserved   [u8; 3]
+//! [17]     display_index u8   zero-based display stream index (was reserved[0])
+//! [18..20] reserved   [u8; 2]
 //! [20..]   payload    [u8]     H.264 NAL unit slice
 //! ```
 //!
@@ -55,6 +56,16 @@ use tracing::{debug, info, warn};
 
 pub const VIDEO_PORT: u16 = 7878;
 pub const SIGNALING_PORT: u16 = 7879;
+
+/// UDP video port for a given display index: 7878, 7880, 7882, …
+pub fn video_port(display_index: u8) -> u16 {
+    VIDEO_PORT + (display_index as u16) * 2
+}
+
+/// TCP signaling port for a given display index: 7879, 7881, 7883, …
+pub fn signaling_port(display_index: u8) -> u16 {
+    SIGNALING_PORT + (display_index as u16) * 2
+}
 
 // ── TLS certificate generation ─────────────────────────────────────────────────
 
@@ -182,7 +193,7 @@ pub fn generate_pairing_pin() -> String {
 // ── Protocol constants ─────────────────────────────────────────────────────────
 
 const MAGIC: u32 = 0x444C_4E4B;
-/// Header bytes written by Swift: magic(4)+frameSeq(4)+fragIdx(2)+fragCount(2)+pts(4)+flags(1)+reserved(3) = 20
+/// Header bytes written by Swift: magic(4)+frameSeq(4)+fragIdx(2)+fragCount(2)+pts(4)+flags(1)+display_index(1)+reserved(2) = 20
 const HEADER_SIZE: usize = 20;
 const UDP_BUF_SIZE: usize = 65_535;
 const REASSEMBLY_TIMEOUT: Duration = Duration::from_secs(2);
@@ -196,6 +207,8 @@ struct DualLinkPacket {
     frag_count: u16,
     pts_ms: u32,
     is_keyframe: bool,
+    /// Zero-based display stream index from byte [17] of the DLNK header.
+    display_index: u8,
     payload: Bytes,
 }
 
@@ -213,10 +226,11 @@ fn parse_packet(buf: &[u8]) -> Option<DualLinkPacket> {
     let frag_count  = u16::from_be_bytes(buf[10..12].try_into().ok()?);
     let pts_ms      = u32::from_be_bytes(buf[12..16].try_into().ok()?);
     let flags       = buf[16];
-    // buf[17..20] = reserved
+    let display_index = buf[17];  // byte [17]: display_index (was reserved[0])
+    // buf[18..20] = reserved
     if frag_count == 0 { return None; }
     let payload = Bytes::copy_from_slice(&buf[HEADER_SIZE..]);
-    Some(DualLinkPacket { frame_seq, frag_index, frag_count, pts_ms, is_keyframe: flags & 0x01 != 0, payload })
+    Some(DualLinkPacket { frame_seq, frag_index, frag_count, pts_ms, is_keyframe: flags & 0x01 != 0, display_index, payload })
 }
 
 // ── Frame reassembler ──────────────────────────────────────────────────────────
@@ -335,6 +349,8 @@ struct SignalingMessage {
     input_event: Option<InputEvent>,
     #[serde(rename = "pairingPin", skip_serializing_if = "Option::is_none")]
     pairing_pin: Option<String>,
+    #[serde(rename = "displayIndex", skip_serializing_if = "Option::is_none")]
+    display_index: Option<u8>,
 }
 
 impl SignalingMessage {
@@ -349,6 +365,7 @@ impl SignalingMessage {
             timestamp_ms: None,
             input_event: None,
             pairing_pin: None,
+            display_index: None,
         }
     }
 
@@ -363,6 +380,7 @@ impl SignalingMessage {
             timestamp_ms: None,
             input_event: Some(event),
             pairing_pin: None,
+            display_index: None,
         }
     }
 }

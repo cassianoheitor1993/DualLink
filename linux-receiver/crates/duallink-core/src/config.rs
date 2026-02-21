@@ -13,6 +13,10 @@ pub struct StreamConfig {
     pub codec: VideoCodec,
     #[serde(alias = "lowLatencyMode")]
     pub low_latency_mode: bool,
+    /// Zero-based index identifying which display channel this config belongs to.
+    /// Drives port selection: video=7878+2*n, signaling=7879+2*n.
+    #[serde(alias = "displayIndex", default)]
+    pub display_index: u8,
 }
 
 impl Default for StreamConfig {
@@ -23,6 +27,7 @@ impl Default for StreamConfig {
             max_bitrate_bps: 8_000_000,
             codec: VideoCodec::H264,
             low_latency_mode: true,
+            display_index: 0,
         }
     }
 }
@@ -36,6 +41,7 @@ impl StreamConfig {
             max_bitrate_bps: 20_000_000,
             codec: VideoCodec::H264,
             low_latency_mode: true,
+            display_index: 0,
         }
     }
 

@@ -4,6 +4,7 @@
 //! connection is available for transport.
 
 use std::net::Ipv4Addr;
+#[cfg(target_os = "linux")]
 use tracing::info;
 
 /// Well-known subnet for DualLink USB gadget connections.
@@ -23,6 +24,11 @@ pub struct UsbEthernetInfo {
 ///
 /// Scans network interfaces for one on the DualLink USB subnet (10.0.1.x).
 /// Returns `None` if no USB Ethernet is detected.
+///
+/// - **Linux:** scans `/sys/class/net/` and reads IPs via `ip -4 addr show`.
+/// - **macOS:** TODO — use `getifaddrs` (stub returns None for now).
+/// - **Windows:** TODO — use `iphlpapi::GetAdaptersAddresses` (stub returns None for now).
+#[cfg(target_os = "linux")]
 pub fn detect_usb_ethernet() -> Option<UsbEthernetInfo> {
     // Read /proc/net/if_inet6 or use getifaddrs
     // For simplicity, scan /sys/class/net/ and check IPs
@@ -61,7 +67,16 @@ pub fn detect_usb_ethernet() -> Option<UsbEthernetInfo> {
     None
 }
 
-/// Get IPv4 address of a network interface by reading /proc/net/fib_trie.
+/// Non-Linux stub — USB Ethernet detection not yet implemented on this OS.
+/// TODO macOS: use libc::getifaddrs binding
+/// TODO Windows: use windows-sys iphlpapi::GetAdaptersAddresses
+#[cfg(not(target_os = "linux"))]
+pub fn detect_usb_ethernet() -> Option<UsbEthernetInfo> {
+    None
+}
+
+/// Get IPv4 address of a network interface (Linux only).
+#[cfg(target_os = "linux")]
 fn get_interface_ipv4(iface: &str) -> Option<Ipv4Addr> {
     // Try reading from /sys/class/net/<iface>/... or parse ip addr output
     // Simplest: read operstate and if UP, try to get address

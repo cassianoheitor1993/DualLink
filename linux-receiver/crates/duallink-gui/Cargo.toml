@@ -19,3 +19,7 @@ anyhow    = { workspace = true }
 duallink-transport = { path = "../duallink-transport" }
 duallink-decoder   = { path = "../duallink-decoder"   }
 duallink-core      = { path = "../duallink-core"      }
+
+# Linux display backends (X11 + Wayland) — not needed on Windows/macOS
+[target.'cfg(target_os = "linux")'.dependencies]
+eframe = { workspace = true, features = ["x11", "wayland"] }

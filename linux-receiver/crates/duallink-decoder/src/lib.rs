@@ -1,18 +1,30 @@
-//! duallink-decoder — Sprint 1.4
+//! duallink-decoder — Sprint 1.4 / Phase 5A
 //!
 //! H.264 hardware-accelerated decoding via GStreamer.
 //!
-//! # Decoder priority (GT-2001 — Legion 5 Pro probe results 2026-02-20)
+//! # Decoder priority per platform
+//!
+//! ## Linux (GT-2001 — Legion 5 Pro probe results 2026-02-20)
 //! 1. `vaapih264dec`  — AMD Radeon 680M VA-API  (5.1ms avg) ← PRIMARY
 //! 2. `vaapidecodebin` — VA-API auto-select      (5.5ms avg)
 //! 3. `nvh264dec`     — NVIDIA NVDEC             (6.0ms avg)
 //! 4. `avdec_h264`    — Software libavcodec      (16.8ms avg) ← last resort
 //!
+//! ## Windows (Phase 5B.3)
+//! 1. `d3d11h264dec`  — Direct3D 11 hardware decode (gstreamer-d3d11)
+//! 2. `mfh264dec`     — Media Foundation H.264 decode
+//! 3. `nvh264dec`     — NVIDIA NVDEC
+//! 4. `avdec_h264`    — Software libavcodec (last resort)
+//!
+//! ## macOS (Phase 5B)
+//! 1. `vtdec_hw`      — VideoToolbox hardware (no copy to CPU)
+//! 2. `vtdec`         — VideoToolbox (may use CPU for some codecs)
+//! 3. `avdec_h264`    — Software libavcodec (last resort)
+//!
 //! # Pipeline
 //! ```text
 //! appsrc → h264parse → [decoder] → videoconvert → video/x-raw,format=BGRA → appsink
 //! ```
-//! `h264parse` converts VideoToolbox AVCC (length-prefixed) → AnnexB automatically.
 
 use bytes::Bytes;
 use duallink_core::{errors::DecoderError, DecodedFrame, EncodedFrame, InputEvent, MouseButton, PixelFormat};
@@ -21,12 +33,36 @@ use gstreamer::prelude::*;
 use gstreamer_app::{AppSink, AppSrc};
 use tracing::{info, debug, warn};
 
-/// Decoder candidates in priority order (GT-2001).
+/// Decoder candidates in priority order — Linux (GT-2001).
+#[cfg(target_os = "linux")]
 static DECODER_PRIORITY: &[(&str, &str)] = &[
     ("vaapih264dec",   "AMD/Intel VA-API H.264 (primary — GT-2001)"),
     ("vaapidecodebin", "VA-API auto-select"),
     ("nvh264dec",      "NVIDIA NVDEC H.264"),
     ("avdec_h264",     "Software libavcodec (last resort)"),
+];
+
+/// Decoder candidates in priority order — Windows (Phase 5B.3).
+#[cfg(target_os = "windows")]
+static DECODER_PRIORITY: &[(&str, &str)] = &[
+    ("d3d11h264dec",   "Direct3D 11 hardware H.264 (gstreamer-d3d11)"),
+    ("mfh264dec",      "Windows Media Foundation H.264"),
+    ("nvh264dec",      "NVIDIA NVDEC H.264"),
+    ("avdec_h264",     "Software libavcodec (last resort)"),
+];
+
+/// Decoder candidates in priority order — macOS (Phase 5B).
+#[cfg(target_os = "macos")]
+static DECODER_PRIORITY: &[(&str, &str)] = &[
+    ("vtdec_hw",   "VideoToolbox hardware H.264 (no CPU copy)"),
+    ("vtdec",      "VideoToolbox H.264"),
+    ("avdec_h264", "Software libavcodec (last resort)"),
+];
+
+/// Fallback for any other OS.
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+static DECODER_PRIORITY: &[(&str, &str)] = &[
+    ("avdec_h264", "Software libavcodec"),
 ];
 
 // ── Probe ─────────────────────────────────────────────────────────────────────

@@ -90,6 +90,74 @@ jobs:
         run: swift test
         working-directory: mac-client
 
+  # ── macOS Receiver (Rust — Phase 5A cross-platform validation) ───────────
+  macos-receiver-build:
+    name: macOS Receiver Build
+    runs-on: macos-14          # Apple Silicon; GStreamer available via Homebrew
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install GStreamer via Homebrew
+        run: |
+          brew install \
+            gstreamer \
+            gst-plugins-base \
+            gst-plugins-good \
+            gst-plugins-bad \
+            gst-plugins-ugly \
+            gst-libav
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry & build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            linux-receiver/target
+          key: macos-cargo-${{ hashFiles('linux-receiver/Cargo.lock') }}
+          restore-keys: macos-cargo-
+
+      - name: cargo build (release)
+        run: cargo build --release -p duallink-app
+        working-directory: linux-receiver
+        env:
+          PKG_CONFIG_PATH: /opt/homebrew/lib/pkgconfig
+
+  # ── Windows Receiver (Rust — Phase 5A: core + transport only) ────────────
+  #   Full GStreamer build will be wired in Phase 5B.3 (Windows receiver).
+  #   This job validates that platform-agnostic crates compile on Windows.
+  windows-receiver-build:
+    name: Windows Receiver Build (core + transport)
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry & build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            linux-receiver/target
+          key: windows-cargo-${{ hashFiles('linux-receiver/Cargo.lock') }}
+          restore-keys: windows-cargo-
+
+      - name: cargo build duallink-core
+        run: cargo build --release -p duallink-core
+        working-directory: linux-receiver
+
+      - name: cargo build duallink-transport
+        run: cargo build --release -p duallink-transport
+        working-directory: linux-receiver
+
   # ── Release: build & upload on version tags ───────────────────────────
   release:
     name: Release

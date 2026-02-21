@@ -11,8 +11,9 @@ name = "duallink-sender"
 path = "src/main.rs"
 
 [dependencies]
-duallink-core           = { workspace = true }
-duallink-capture-linux  = { path = "../duallink-capture-linux" }
+duallink-core             = { workspace = true }
+duallink-capture-linux    = { path = "../duallink-capture-linux" }
+duallink-transport-client = { workspace = true }
 anyhow        = { workspace = true }
 tokio         = { workspace = true }
 tracing       = { workspace = true }
@@ -24,3 +25,4 @@ serde_json    = { workspace = true }
 bytes         = { workspace = true }
 gstreamer     = { workspace = true }
 gstreamer-app = { workspace = true }
+hostname      = { workspace = true }

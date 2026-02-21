@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 duallink-core             = { workspace = true }
 duallink-capture-windows  = { path = "../duallink-capture-windows" }
+duallink-transport-client = { workspace = true }
 anyhow           = { workspace = true }
 tokio            = { workspace = true }
 tracing          = { workspace = true }

@@ -4,17 +4,22 @@ Turns a Linux machine into a DualLink **sender** — share its screen wirelessly
 or via USB-C with any DualLink receiver (Linux, Windows, or macOS running the
 DualLink receiver app).
 
-> **Phase 5B skeleton** — screen capture pipeline is not yet implemented.
-> See the status table in `src/main.rs` for current progress.
+> **Phase 5C** — PipeWire capture, GStreamer H.264 encoder, TLS signaling
+> client, and UDP DLNK video sender are now implemented.  The egui UI and
+> multi-display sender are planned for Phase 5D.
 
 ---
 
 ## Architecture
 
 ```
-PipeWire / XShm  →  GStreamer H.264 encode  →  UDP:7878  →  Receiver
-(capture)           (vaapih264enc)              (DLNK frames)
-                    TCP:7879 TLS signaling
+PipeWire portal (ashpd)
+  └─► pipewiresrc  →  videoconvert  →  appsink   [duallink-capture-linux]
+                                           │
+                              appsrc  →  vaapih264enc  →  appsink  [encoder.rs]
+                                                              │
+                          SignalingClient (TLS:7879+2n) ◄─── │
+                          VideoSender    (UDP:7878+2n) ──────►  Receiver
 ```
 
 ---
@@ -67,13 +72,25 @@ cargo build --release -p duallink-linux-sender
 
 ---
 
-## Run (when implemented)
+## Run
 
 ```bash
-DUALLINK_RECEIVER_IP=192.168.1.100 \
-DUALLINK_PAIRING_PIN=123456 \
+DUALLINK_HOST=192.168.1.100 \
+DUALLINK_PIN=123456 \
+DUALLINK_DISPLAY=0 \
+DUALLINK_WIDTH=1920 DUALLINK_HEIGHT=1080 DUALLINK_FPS=60 \
+DUALLINK_KBPS=8000 \
 ./target/release/duallink-sender
 ```
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DUALLINK_HOST` | `192.168.1.100` | Receiver IP address |
+| `DUALLINK_PIN` | `000000` | 6-digit pairing PIN shown by receiver |
+| `DUALLINK_DISPLAY` | `0` | Zero-based display index |
+| `DUALLINK_WIDTH` / `HEIGHT` | `1920` / `1080` | Capture/encode resolution |
+| `DUALLINK_FPS` | `60` | Target frame rate |
+| `DUALLINK_KBPS` | `8000` | H.264 bitrate in kbps |
 
 ---
 
@@ -87,11 +104,12 @@ DUALLINK_PAIRING_PIN=123456 \
 
 ---
 
-## Phase 5B TODO
+## Phase 5C Status
 
-- [ ] Implement `ScreenCapturer::next_frame` via `ashpd::desktop::ScreenCast`
-- [ ] GStreamer encode pipeline (appsrc → videoconvert → vaapih264enc → appsink)
-- [ ] `SignalingClientRust` — TCP TLS client sending `hello` to receiver
-- [ ] `VideoSenderRust` — UDP DLNK-framed packet sender
-- [ ] egui settings UI
-- [ ] Multi-display sender (N pipelines for N receiver displays)
+- [x] `duallink-capture-linux` — PipeWire portal (`ashpd`) + GStreamer `pipewiresrc` → `appsink`
+- [x] `duallink-transport-client` — TLS signaling client (`SignalingClient`) + UDP sender (`VideoSender`)
+- [x] `encoder.rs` — GStreamer H.264 encoder (`vaapih264enc` / `nvh264enc` / `x264enc` fallback)
+- [x] Full capture → encode → send loop in `main.rs` (env-var config)
+- [ ] egui settings UI (Phase 5D)
+- [ ] Multi-display sender — N parallel pipelines (Phase 5D)
+- [ ] X11 XShm fallback capture backend (Phase 6)

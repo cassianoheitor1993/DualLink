@@ -1,22 +1,22 @@
-//! DualLink Windows Sender — Phase 5B skeleton.
+//! DualLink Windows Sender — Phase 5C.
 //!
 //! Turns a Windows machine into a DualLink **sender**, mirroring or extending its
 //! screen to a DualLink receiver (Linux, macOS, or another Windows machine).
 //!
-//! # Architecture (planned)
+//! # Architecture
 //!
 //! ```text
 //! Windows (this app)                   Receiver (any DualLink receiver)
 //! ─────────────────────────────── ─── ─────────────────────────────────────
 //! Windows.Graphics.Capture (WGC)      display decoder (GStreamer / VT)
-//!   │                                   │
-//!   ▼                                   │
-//! GStreamer encode                       │
-//!   mfh264enc / nvh264enc              │
-//!   │                                   │
-//!   ▼                                   │
-//! duallink-transport UDP:7878 ────────► UDP receiver
-//! TLS signaling      TCP:7879 ────────► TLS signaling server
+//!   │
+//!   ▼
+//! GStreamer encode
+//!   mfh264enc / nvh264enc
+//!   │
+//!   ▼
+//! VideoSender (UDP:7878+2n) ──────────► UDP receiver
+//! SignalingClient (TLS:7879+2n) ──────► TLS signaling server
 //! ```
 //!
 //! # Virtual display
@@ -26,19 +26,18 @@
 //! - **IddCx** (Indirect Display driver): zero-cost, requires a driver package
 //! - **parsec-vdd**: open-source IddCx-based virtual display from Parsec
 //!
-//! # Phase 5B status
+//! # Phase 5C status
 //!
 //! - [x] Workspace scaffold + dependency declarations
 //! - [x] `duallink-capture-windows` stub (WGC API surface)
+//! - [x] `duallink-transport-client` — TLS signaling client + UDP DLNK sender
 //! - [ ] WGC capture implementation (GraphicsCaptureSession + FramePool)
 //! - [ ] GStreamer H.264 encode pipeline (appsrc → mfh264enc / nvh264enc)
-//! - [ ] Signaling client (TCP TLS `hello` handshake)
-//! - [ ] UDP video sender (DLNK-framed packets)
 //! - [ ] egui settings UI
 //! - [ ] Virtual display (IddCx / parsec-vdd integration)
 
 use anyhow::Result;
-use tracing::{info};
+use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -53,10 +52,13 @@ async fn main() -> Result<()> {
 
     info!("DualLink Windows Sender v{}", env!("CARGO_PKG_VERSION"));
 
-    // TODO Phase 5B: launch egui settings window
-    // TODO Phase 5B: start WGC capture + GStreamer encode + UDP send pipeline
+    // TODO Phase 5C: implement WGC capture via duallink-capture-windows
+    // TODO Phase 5C: build GStreamer H.264 encode pipeline
+    // TODO Phase 5C: wire duallink_transport_client::{SignalingClient, VideoSender}
+    // TODO Phase 5C: launch egui settings window
 
     info!("Windows sender skeleton — capture pipeline not yet implemented.");
+    info!("Transport client (signaling + UDP sender) is ready in duallink-transport-client.");
     info!("See windows-sender/README.md for development roadmap.");
 
     Ok(())

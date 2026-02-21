@@ -10,10 +10,15 @@ license.workspace  = true
 duallink-core = { workspace = true }
 anyhow        = { workspace = true }
 tracing       = { workspace = true }
+tokio         = { workspace = true }
+serde         = { workspace = true }
 
 # PipeWire portal (Wayland / PipeWire)
 [target.'cfg(target_os = "linux")'.dependencies]
-ashpd = { version = "0.9" }
+ashpd           = { version = "0.9" }
+gstreamer       = { workspace = true }
+gstreamer-app   = { workspace = true }
+gstreamer-video = { workspace = true }
 
 [features]
 default   = ["pipewire"]

@@ -12,7 +12,8 @@ authors  = ["DualLink Contributors"]
 license  = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-duallink-core = { path = "../linux-receiver/crates/duallink-core" }
+duallink-core             = { path = "../linux-receiver/crates/duallink-core" }
+duallink-transport-client = { path = "../linux-sender/crates/duallink-transport-client" }
 
 anyhow      = "1"
 tokio       = { version = "1", features = ["full"] }

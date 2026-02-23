@@ -148,14 +148,47 @@ public final class ScreenCaptureManager: NSObject, ObservableObject {
 
     private func buildStreamConfig(from config: StreamConfig, display: SCDisplay) -> SCStreamConfiguration {
         let streamConfig = SCStreamConfiguration()
-        streamConfig.width = config.resolution.width
-        streamConfig.height = config.resolution.height
+
+        // --- Cause-2 fix (GT-CLICK-SNAP): ensure output dimensions exactly match
+        // the display's aspect ratio so there is NEVER letterboxing or pillarboxing.
+        // If config.resolution has a different AR (e.g. 1920×1080 on a 16:10 display),
+        // ScreenCaptureKit would letter/pillarbox the content.  The Linux side normalises
+        // pointer coordinates by the full frame size (including black bars), producing a
+        // systematic click-position offset that grows toward the edges.
+        // Fix: fit config.resolution as a bounding box, derive the actual output size from
+        // the display's true AR.  Always force even dimensions for H.264 compatibility.
+        let displayW = display.width    // logical pixels (points)
+        let displayH = display.height   // logical pixels (points)
+
+        let outW: Int
+        let outH: Int
+
+        if displayW > 0 && displayH > 0 {
+            let displayAR  = Double(displayW) / Double(displayH)
+            let requestedAR = Double(config.resolution.width) / Double(config.resolution.height)
+
+            if displayAR >= requestedAR {
+                // Display is wider than (or equal to) the requested AR → fit to width
+                outW = config.resolution.width & ~1
+                outH = Int((Double(config.resolution.width) / displayAR).rounded()) & ~1
+            } else {
+                // Display is taller than the requested AR → fit to height
+                outH = config.resolution.height & ~1
+                outW = Int((Double(config.resolution.height) * displayAR).rounded()) & ~1
+            }
+        } else {
+            outW = config.resolution.width  & ~1
+            outH = config.resolution.height & ~1
+        }
+
+        streamConfig.width  = outW
+        streamConfig.height = outH
         streamConfig.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(config.targetFPS))
 
         // NV12 é o formato nativo para encoding H.264 — minimiza conversão
         streamConfig.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
 
-        // Escalar para resolução alvo se diferente do display físico
+        // scalesToFit: fills the output rectangle; with matching AR this is simply a scale
         streamConfig.scalesToFit = true
 
         // Capturar apenas o conteúdo visível

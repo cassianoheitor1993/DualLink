@@ -16,6 +16,29 @@ public final class InputInjectionManager: @unchecked Sendable {
     /// Mouse coordinates are mapped to this display's bounds.
     private var targetDisplayID: CGDirectDisplayID?
     private var displayBounds: CGRect = .zero
+
+    /// Last cursor position in global Quartz coordinates, set by every
+    /// `mouseMove` event.  Used to post click events without a position
+    /// override, preventing the visible "cursor snap" that occurs when a
+    /// mouse button CGEvent carries a `mouseCursorPosition` that differs
+    /// slightly from the actual cursor location.
+    ///
+    /// Root cause reminder (GT-CLICK-SNAP): CGEvent mouse button events
+    /// include `mouseCursorPosition`, which macOS uses to physically move
+    /// the cursor as a side-effect of the click.  Any coordinate rounding
+    /// error (e.g., stream resolution ≠ display bounds, see Cause-2 below)
+    /// is therefore visible as a jump on every mouseDown / mouseUp.
+    /// Fix: always post click events at `lastKnownCursorPoint` — i.e. where
+    /// the cursor already is — rather than re-deriving the position from the
+    /// event payload.
+    ///
+    /// Cause-2 note: if `config.resolution` AR ≠ virtual display AR,
+    /// ScreenCaptureKit letterboxes the content.  The Linux side normalises
+    /// by the full frame dimensions (including black bars), producing a
+    /// systematic offset that grows toward the edges (~2-4 in at 96 dpi).
+    /// Long-term fix: set stream resolution = virtual display bounds size.
+    private var lastKnownCursorPoint: CGPoint?
+
     private var eventsInjected: UInt64 = 0
 
     public init() {}
@@ -83,13 +106,20 @@ public final class InputInjectionManager: @unchecked Sendable {
 
     private func injectMouseMove(x: Double, y: Double) {
         let point = mapToDisplay(x: x, y: y)
+        lastKnownCursorPoint = point          // track for click events
         guard let event = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
                                    mouseCursorPosition: point, mouseButton: .left) else { return }
         event.post(tap: .cgSessionEventTap)
     }
 
     private func injectMouseButton(x: Double, y: Double, button: MouseButton, isDown: Bool) {
-        let point = mapToDisplay(x: x, y: y)
+        // Use the last cursor position set by a mouseMove event rather than
+        // re-mapping the click coordinates.  This prevents the cursor from
+        // snapping to a slightly-off position on every mouseDown / mouseUp
+        // (GT-CLICK-SNAP: CGEvent mouse events move the cursor to their
+        // embedded mouseCursorPosition as a side-effect of the click).
+        // If no mouseMove has been received yet, fall back to the mapped point.
+        let point = lastKnownCursorPoint ?? mapToDisplay(x: x, y: y)
         let (eventType, cgButton) = mouseEventParams(button: button, isDown: isDown)
         guard let event = CGEvent(mouseEventSource: nil, mouseType: eventType,
                                    mouseCursorPosition: point, mouseButton: cgButton) else { return }

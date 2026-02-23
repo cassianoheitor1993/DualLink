@@ -143,6 +143,20 @@ applyTo: "mac-client/**"
 
 ---
 
-**Total de tips:** 6
-**Última atualização:** 2026-02-20
-**Economia estimada:** 7h (entitlements, selectors, pixel format, app bundle setup, display mode config, display limit)
+### GT-1007: InputInjection — Cursor jumps 2-4 inches after mouse clicks (dual cause)
+
+- **Data:** 2026-02-23
+- **Contexto:** Sprint 2.3 — input forwarding from Linux receiver back to Mac
+- **Sintoma:** After every mouse click (specifically on button release) on any display, the macOS cursor visibly jumps 2-4 inches in a consistent direction. The offset grows toward the edges of the screen (zero at center).
+- **Causa raiz:** Two independent causes combine:
+  1. **CGEvent click snap (Causa 1):** `CGEvent(mouseType: .leftMouseDown/Up, mouseCursorPosition: point)` causes macOS to physically move the cursor to `point` as a side effect of the click event. Any coordinate rounding error in `point` becomes a visible cursor snap. Fix: track `lastKnownCursorPoint` in `injectMouseMove` and use it for all click events instead of re-mapping the click's coordinates.
+  2. **Aspect ratio letterboxing (Causa 2):** When `config.resolution` AR ≠ virtual display AR, ScreenCaptureKit (`scalesToFit = true`) letterboxes the content with black bars. The Linux side normalises pointer coordinates by the full frame dimensions (including bars). This causes a systematic offset (`x = px / frameWidth` instead of `px / contentWidth`) that grows at the display edges, producing ~2-4 inches of error. Fix: in `buildStreamConfig`, compute output dimensions that exactly preserve the display's AR (fit within the requested resolution bounding box), so there are never any black bars.
+- **Solução:** See `InputInjection.swift` (`lastKnownCursorPoint` tracking) and `ScreenCaptureManager.swift` (`buildStreamConfig` AR-aware size calculation).
+- **Pista-chave:** If clicks snap the cursor, check: (1) does the CGEvent carry `mouseCursorPosition`? (2) does the stream resolution match the display AR? Both must be correct simultaneously.
+- **Tags:** #input-injection #CGEvent #coordinates #click-snap #aspect-ratio #letterboxing #sprint-2.3
+
+---
+
+**Total de tips:** 7
+**Última atualização:** 2026-02-23
+**Economia estimada:** 9h (entitlements, selectors, pixel format, app bundle setup, display mode config, display limit, click-snap)

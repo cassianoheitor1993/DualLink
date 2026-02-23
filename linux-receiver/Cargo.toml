@@ -5,8 +5,6 @@ members = [
     "crates/duallink-decoder",
     "crates/duallink-renderer",
     "crates/duallink-transport",
-    "crates/duallink-webrtc",
-    "crates/duallink-signaling",
     "crates/duallink-discovery",
     "crates/duallink-input",
     "crates/duallink-app",

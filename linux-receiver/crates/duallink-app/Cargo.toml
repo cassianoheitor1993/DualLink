@@ -13,8 +13,6 @@ duallink-core = { path = "../duallink-core" }
 duallink-decoder = { path = "../duallink-decoder" }
 duallink-renderer = { path = "../duallink-renderer" }
 duallink-transport = { path = "../duallink-transport" }
-duallink-webrtc = { path = "../duallink-webrtc" }
-duallink-signaling = { path = "../duallink-signaling" }
 duallink-discovery = { path = "../duallink-discovery" }
 duallink-input = { path = "../duallink-input" }
 tokio.workspace = true

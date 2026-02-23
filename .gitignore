@@ -4,6 +4,7 @@
 
 # macOS
 mac-client/.build/
+mac-client/DualLink.app/
 poc/**/.build/
 mac-client/DerivedData/
 mac-client/*.xcuserdata/

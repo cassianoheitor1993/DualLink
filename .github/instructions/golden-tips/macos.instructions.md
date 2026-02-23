@@ -157,6 +157,18 @@ applyTo: "mac-client/**"
 
 ---
 
-**Total de tips:** 7
+### GT-1008: macOS "Full Keyboard Access" causes cursor warp to focused UI elements
+
+- **Data:** 2026-02-23
+- **Contexto:** Debugging cursor jump during/after DualLink screen sharing
+- **Sintoma:** Cursor jumps to UI focus targets (e.g., VS Code sidebar items, buttons) after any click or keyboard navigation. Happens even with DualLink closed. Looks like a DualLink input injection bug but is not.
+- **Causa raiz:** macOS System Settings → Keyboard → **"Full Keyboard Access"** (a.k.a. Keyboard Navigation) was enabled. This setting makes macOS warp the mouse cursor to follow keyboard focus changes — including programmatic focus shifts triggered by CGEvent injection.
+- **Solução:** Disable "Full Keyboard Access" in System Settings → Keyboard. The cursor stops warping immediately.
+- **Pista-chave:** If cursor warps to UI elements (not random positions), and the behavior persists even without DualLink running, it's a macOS Accessibility/Keyboard setting — NOT a code bug. Check "Full Keyboard Access" first, then "Shake mouse to locate."
+- **Tags:** #accessibility #keyboard-navigation #cursor-warp #macos-settings #false-positive
+
+---
+
+**Total de tips:** 8
 **Última atualização:** 2026-02-23
-**Economia estimada:** 9h (entitlements, selectors, pixel format, app bundle setup, display mode config, display limit, click-snap)
+**Economia estimada:** 11h (entitlements, selectors, pixel format, app bundle setup, display mode config, display limit, click-snap, false-positive cursor warp)

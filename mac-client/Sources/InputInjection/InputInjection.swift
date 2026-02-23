@@ -121,6 +121,7 @@ public final class InputInjectionManager: @unchecked Sendable {
         // If no mouseMove has been received yet, fall back to the mapped point.
         let point = lastKnownCursorPoint ?? mapToDisplay(x: x, y: y)
         let (eventType, cgButton) = mouseEventParams(button: button, isDown: isDown)
+
         guard let event = CGEvent(mouseEventSource: nil, mouseType: eventType,
                                    mouseCursorPosition: point, mouseButton: cgButton) else { return }
         event.post(tap: .cgSessionEventTap)

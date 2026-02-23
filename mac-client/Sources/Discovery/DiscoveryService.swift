@@ -28,7 +28,7 @@ public final class DiscoveryService: ObservableObject {
     /// Start Bonjour browsing for DualLink receivers.
     public func startBrowsing() {
         stopBrowsing()
-        var params = NWParameters()
+        let params = NWParameters()
         params.includePeerToPeer = true
 
         let browser = NWBrowser(
@@ -106,12 +106,24 @@ public final class DiscoveryService: ObservableObject {
 // MARK: - NWTXTRecord convenience
 
 private extension NWTXTRecord {
-    /// All key=value pairs as a [String: String] dictionary.
+    /// Extract a string value from an NWTXTRecord.Entry.
+    private static func entryString(_ entry: NWTXTRecord.Entry) -> String? {
+        switch entry {
+        case .string(let s): return s
+        case .data(let d):   return String(data: d, encoding: .utf8)
+        case .none:          return nil
+        @unknown default:    return nil
+        }
+    }
+
+    /// All DualLink TXT keys as a [String: String] dictionary.
     var dictionary: [String: String] {
+        let keys = ["host", "port", "displays", "fp"]
         var result: [String: String] = [:]
-        for key in self.keys {
-            if let entry = self.getEntry(for: key) {
-                result[key] = entry
+        for key in keys {
+            if let entry = getEntry(for: key),
+               let value = Self.entryString(entry) {
+                result[key] = value
             }
         }
         return result
